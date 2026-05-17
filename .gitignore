@@ -1,6 +1,7 @@
 /bin/
 project/
 .vscode/
+.idea/
 
 gloo-cppcheck-build-dir/
 gloo.cppcheck
