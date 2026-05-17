@@ -5,6 +5,7 @@
 #include <string>
 #include <memory>
 #include <cassert>
+#include <stdexcept>
 #include <algorithm>
 #include "GarrysMod/Lua/Interface.h"
 

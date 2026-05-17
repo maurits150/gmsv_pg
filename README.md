@@ -17,7 +17,9 @@ On Linux there are two ways to install dependencies.
 **via apt**
 ```sh
 # make sure you have postgresql repositories added beforehand!
-sudo apt-get install libpq-dev:i386
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install build-essential g++-multilib libc6-dev-i386 linux-libc-dev:i386 libpq-dev:i386
 ```
 
 **the lazy way**
