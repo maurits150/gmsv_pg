@@ -7,6 +7,10 @@ Date: 2026-05-17
 
 Refactor `gmsv_pg` into a PostgreSQL-first Garry's Mod module whose Lua API is familiar enough for MySQLOO users to migrate with minimal application-code churn.
 
+Implementation direction: use MySQLOO's proven runtime/API architecture as the base and replace its MySQL backend with a PostgreSQL backend. This is more viable than growing the current small `gmsv_pg` implementation into a MySQLOO-compatible runtime because MySQLOO already has the desired Lua object model, async queue, Think-hook callback delivery, query lifecycle, transaction staging, wait/abort behavior, and reconnect flow.
+
+Because this means copying or adapting MySQLOO implementation code, the derived portions must remain LGPL-2.1. This is acceptable for this project, but the licensing boundary must be explicit in source files and documentation.
+
 This is not a plan to disguise PostgreSQL as MySQL. The module should expose PostgreSQL behavior honestly, while matching MySQLOO's object model, lifecycle methods, callback names, and result-table shape where those concepts transfer cleanly.
 
 The intended migration path is:
@@ -42,6 +46,7 @@ Compatibility must not hide PostgreSQL semantics or degrade PostgreSQL-native fe
 - Do not make PostgreSQL prepared statements worse just to mimic MySQL internals.
 - Do not require users to install files into Garry's Mod from the build system. Users can symlink or copy binaries themselves.
 - Do not add backward-compatible aliases that conflict with PostgreSQL-native behavior unless the compatibility value is clear.
+- Do not preserve the current `gmsv_pg` runtime architecture if it conflicts with the MySQLOO-compatible object/queue/callback model.
 
 ## Current State
 
@@ -531,9 +536,28 @@ Implementation direction:
 
 ## Architecture Plan
 
+The architecture owner for this refactor is the MySQLOO runtime shape: Lua object wrappers, per-database worker queue, query data objects, Think-hook callback delivery, and staged transactions should be adapted from MySQLOO. The PostgreSQL backend owns execution details and must replace the MySQL backend rather than wrapping it.
+
+Target layout:
+
+```text
+src/lua/       MySQLOO-derived Lua binding/object layer, renamed for pg
+src/postgres/  PostgreSQL backend replacing src/mysql
+```
+
+The current `pg/src` code can be used as a reference for existing libpqxx usage and build integration, but it should not remain the runtime model if it duplicates or conflicts with the MySQLOO-derived architecture.
+
+Licensing tasks:
+
+- Preserve MySQLOO's LGPL-2.1 license text in the repository.
+- Mark copied/adapted MySQLOO-derived files as LGPL-2.1-derived.
+- Keep original MIT license notices for original `gmsv_pg` code that remains.
+- Document in the README that the module contains LGPL-2.1-derived MySQLOO compatibility/runtime code.
+- Keep source available when distributing rebuilt binaries.
+
 ### 1. Replace Raw Pointer Ownership
 
-Current code stores raw pointers for connections, work objects, and threads.
+Current `gmsv_pg` code stores raw pointers for connections, work objects, and threads. MySQLOO's newer runtime already uses stronger ownership patterns in many places, so prefer adapting that model rather than incrementally patching the old `pg/src` model.
 
 Tasks:
 
@@ -542,9 +566,9 @@ Tasks:
 - Avoid storing pointers to stack-owned libpqxx objects.
 - Define clear object lifetime rules for Lua tables and C++ state.
 
-### 2. Introduce Core Types
+### 2. Introduce PostgreSQL Backend Types
 
-Create C++ core classes independent of Lua binding details:
+Create PostgreSQL backend classes matching MySQLOO's existing runtime seams:
 
 ```text
 PgDatabase
@@ -558,12 +582,14 @@ PgWorkerQueue
 
 Responsibilities:
 
-- `PgDatabase`: connection state, queue, connect/disconnect, options.
+- `PgDatabase`: PostgreSQL connection state, reconnect, per-database queue, connect/disconnect, options.
 - `PgQuery`: SQL text, status, result data, error data, cancellation.
-- `PgPreparedQuery`: SQL text, parameter storage, placeholder translation.
-- `PgTransaction`: ordered set of queries executed in one transaction.
-- `PgResultSet`: rows, columns, affected rows, command status.
-- `PgWorkerQueue`: async execution and callback delivery handoff.
+- `PgPreparedQuery`: SQL text, parameter storage, placeholder translation, PostgreSQL parameter execution.
+- `PgTransaction`: ordered set of staged queries executed in one PostgreSQL transaction.
+- `PgResultSet`: rows, columns, affected rows, command status, type metadata.
+- `PgWorkerQueue`: async execution and callback delivery handoff, adapted from MySQLOO's database worker model.
+
+Do not keep MySQL backend names in the PostgreSQL implementation. Compatibility is at the Lua API boundary; backend code should say PostgreSQL/PG, not MySQL.
 
 ### 3. Implement Status Model
 
@@ -697,14 +723,29 @@ This keeps the C++ API smaller and makes compatibility behavior easier to iterat
 
 ## Implementation Phases
 
+### Phase 0: Import MySQLOO Runtime Base
+
+- Vendor or copy the MySQLOO source files needed for the Lua object model, query lifecycle, callback delivery, queue, and transaction staging.
+- Rename module-facing symbols from `mysqloo` to `pg` while keeping compatibility method names.
+- Replace MySQL-specific namespaces, filenames, and class names in the backend slice with PostgreSQL names.
+- Remove MySQL client dependency from the new module path.
+- Add LGPL-2.1 license documentation for derived files.
+- Keep the build producing `gmsv_pg_*` binaries.
+
+Exit criteria:
+
+- The imported runtime compiles as `pg` without linking MySQL.
+- PostgreSQL backend stubs exist for database/query/prepared query/transaction execution.
+- No MySQL backend code remains in the active build except as reference material outside the compiled source set.
+
 ### Phase 1: API Skeleton
 
-- Add MySQLOO-compatible constants.
-- Add `pg.connect(...)` constructor.
-- Keep `pg.new_connection(...)` as PostgreSQL-native alias or existing compatibility path.
-- Rename/add database methods to match MySQLOO shape.
-- Add no-op compatibility methods where safe.
-- Add callback-field lookup while preserving event emitter callbacks if practical.
+- Expose MySQLOO-compatible constants from the `pg` module table.
+- Add `pg.connect(...)` constructor using MySQLOO's public shape but PostgreSQL connection options internally.
+- Keep `pg.new_connection(...)` only if it remains a useful PostgreSQL-native alias.
+- Ensure database methods match MySQLOO shape through the MySQLOO-derived Lua binding layer.
+- Add no-op compatibility methods only where the plan explicitly allows them.
+- Preserve MySQLOO callback-field lookup as the primary compatibility path.
 
 Exit criteria:
 
