@@ -36,10 +36,6 @@ void PreparedQuery::setNull(unsigned int index) {
     m_parameters[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_NULL);
 }
 
-void PreparedQuery::putNewParameters() {
-    throw PGException("pg: putNewParameters() is not supported until PostgreSQL multi-result access is implemented");
-}
-
 PreparedParameterMap PreparedQuery::snapshotParameters() const {
     return m_parameters;
 }

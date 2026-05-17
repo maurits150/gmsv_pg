@@ -21,12 +21,8 @@ public:
     void executeInTransaction(Database &database, pqxx::connection &connection, pqxx::work &transaction,
                               const std::shared_ptr<IQueryData> &data) override;
 
-    unsigned long long lastInsert();
     unsigned long long affectedRows();
-    std::string commandStatus();
     unsigned long long oid();
-    bool hasMoreResults();
-    void getNextResults();
     std::string getSQLString() override { return m_query; }
 
     static std::shared_ptr<Query> create(const std::shared_ptr<Database> &database, const std::string &query);
@@ -46,7 +42,6 @@ public:
     unsigned long long getLastInsertID() const { return 0; }
     unsigned long long getAffectedRows() const { return m_affectedRows.empty() ? 0 : m_affectedRows.front(); }
     bool hasAnyResults() const { return !m_results.empty(); }
-    bool getNextResults();
     ResultData &getResult() { return m_results.front(); }
     std::deque<ResultData> getResults() { return m_results; }
 

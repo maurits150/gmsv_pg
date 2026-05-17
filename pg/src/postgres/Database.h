@@ -90,12 +90,7 @@ public:
     std::deque<std::pair<bool, std::string>> takeReconnectEvents();
 
     void setAutoReconnect(bool autoReconnect);
-    void setMultiStatements(bool multiStatement);
-    bool allowsMultiStatements() const { return useMultiStatements; }
-    void setCachePreparedStatements(bool);
     void setConnectTimeout(unsigned int timeout);
-    void setReadTimeout(unsigned int timeout);
-    void setWriteTimeout(unsigned int timeout);
     void setSSLMode(SSLMode mode);
     void setSSLSettings(const SSLSettings &settings);
 
@@ -141,7 +136,6 @@ private:
     unsigned int m_serverVersion = 0;
 
     std::atomic<bool> shouldAutoReconnect{true};
-    bool useMultiStatements = false;
     bool startedConnecting = false;
     std::atomic<bool> m_canWait{false};
     std::atomic<bool> m_shuttingDown{false};

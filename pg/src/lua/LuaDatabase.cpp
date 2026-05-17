@@ -210,23 +210,13 @@ PG_LUA_FUNCTION(setSSLSettings) {
 }
 
 PG_LUA_FUNCTION(setReadTimeout) {
-    auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
-    unsigned int timeout = (int) LUA->GetNumber(2);
-    if (timeout == 0) {
-        LUA->ThrowError("Timeout must be at least 1");
-    }
-    database->m_database->setReadTimeout(timeout);
-    return 0;
+    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
+    throw PGException("pg: setReadTimeout() is not supported by libpq; use PostgreSQL statement_timeout instead");
 }
 
 PG_LUA_FUNCTION(setWriteTimeout) {
-    auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
-    unsigned int timeout = (int) LUA->GetNumber(2);
-    if (timeout == 0) {
-        LUA->ThrowError("Timeout must be at least 1");
-    }
-    database->m_database->setWriteTimeout(timeout);
-    return 0;
+    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
+    throw PGException("pg: setWriteTimeout() is not supported by libpq");
 }
 
 PG_LUA_FUNCTION(setConnectTimeout) {
@@ -294,17 +284,16 @@ PG_LUA_FUNCTION(setAutoReconnect) {
 }
 
 PG_LUA_FUNCTION(setMultiStatements) {
-    auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     LUA->CheckType(2, GarrysMod::Lua::Type::Bool);
-    database->m_database->setMultiStatements(LUA->GetBool(2));
+    if (LUA->GetBool(2)) {
+        throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
+    }
     return 0;
 }
 
 PG_LUA_FUNCTION(setCachePreparedStatements) {
-    auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     LUA->CheckType(2, GarrysMod::Lua::Type::Bool);
-    database->m_database->setCachePreparedStatements(LUA->GetBool(2));
-    return 0;
+    throw PGException("pg: setCachePreparedStatements() is not supported; prepared statements are prepared per execution");
 }
 
 PG_LUA_FUNCTION(abortAllQueries) {

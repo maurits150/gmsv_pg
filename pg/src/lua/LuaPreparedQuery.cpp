@@ -60,9 +60,7 @@ PG_LUA_FUNCTION(setNull) {
 }
 
 PG_LUA_FUNCTION(putNewParameters) {
-    auto query = getBackendPreparedQuery(LUA);
-    query->putNewParameters();
-    return 0;
+    throw PGException("pg: putNewParameters() is not supported until PostgreSQL multi-result access is implemented");
 }
 
 PG_LUA_FUNCTION(clearParameters) {

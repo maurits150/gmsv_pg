@@ -54,7 +54,6 @@ public:
     void setString(unsigned int index, const std::string &value);
     void setBoolean(unsigned int index, bool value);
     void setNull(unsigned int index);
-    void putNewParameters();
     PreparedParameterMap snapshotParameters() const;
 
     static std::shared_ptr<PreparedQuery> create(const std::shared_ptr<Database> &database, std::string query);

@@ -130,10 +130,7 @@ PG_LUA_FUNCTION(affectedRows) {
 }
 
 PG_LUA_FUNCTION(commandStatus) {
-    auto query = getBackendQuery(LUA);
-    auto status = query->commandStatus();
-    LUA->PushString(status.c_str());
-    return 1;
+    throw PGException("pg: commandStatus() is not available through the bundled libpqxx result API yet");
 }
 
 PG_LUA_FUNCTION(oid) {
@@ -143,9 +140,7 @@ PG_LUA_FUNCTION(oid) {
 }
 
 PG_LUA_FUNCTION(lastInsert) {
-    auto query = getBackendQuery(LUA);
-    LUA->PushNumber((double) query->lastInsert());
-    return 1;
+    throw PGException("pg: lastInsert() is MySQL-specific and is not supported; use INSERT ... RETURNING instead");
 }
 
 PG_LUA_FUNCTION(getData) {
@@ -162,15 +157,12 @@ PG_LUA_FUNCTION(getData) {
 }
 
 PG_LUA_FUNCTION(hasMoreResults) {
-    auto query = getBackendQuery(LUA);
-    LUA->PushBool(query->hasMoreResults());
+    LUA->PushBool(false);
     return 1;
 }
 
 PG_LUA_FUNCTION(getNextResults) {
-    auto query = getBackendQuery(LUA);
-    query->getNextResults();
-    return 0;
+    throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
 }
 
 void LuaQuery::addMetaTableFunctions(ILuaBase *LUA) {

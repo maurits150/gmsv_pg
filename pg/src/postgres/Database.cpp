@@ -234,23 +234,7 @@ size_t Database::queueSize() { return queryQueue.size(); }
 bool Database::wasDisconnected() { return disconnected; }
 
 void Database::setAutoReconnect(bool autoReconnect) { shouldAutoReconnect = autoReconnect; }
-void Database::setMultiStatements(bool multiStatement) {
-    if (multiStatement) {
-        throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
-    }
-    useMultiStatements = false;
-}
-void Database::setCachePreparedStatements(bool) {
-    throw PGException("pg: setCachePreparedStatements() is not supported; prepared statements are prepared per execution");
-}
 void Database::setConnectTimeout(unsigned int timeout) { connectTimeout = timeout; }
-void Database::setReadTimeout(unsigned int) {
-    throw PGException("pg: setReadTimeout() is not supported by libpq; use PostgreSQL statement_timeout instead");
-}
-
-void Database::setWriteTimeout(unsigned int) {
-    throw PGException("pg: setWriteTimeout() is not supported by libpq");
-}
 void Database::setSSLMode(SSLMode mode) { hasSSLMode = true; sslMode = mode; }
 
 void Database::setSSLSettings(const SSLSettings &settings) {
