@@ -28,7 +28,6 @@ public:
     bool hasMoreResults();
     void getNextResults();
     virtual std::shared_ptr<QueryData> buildQueryData();
-    int m_dataReference = 0;
     std::string getSQLString() override { return m_query; }
 
     static std::shared_ptr<Query> create(const std::shared_ptr<Database> &database, const std::string &query);

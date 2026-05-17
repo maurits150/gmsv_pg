@@ -93,9 +93,9 @@ std::shared_ptr<IQueryData> LuaTransaction::buildQueryData(ILuaBase *LUA, int st
 }
 
 void LuaTransaction::runAbortedCallback(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,
-                                      const std::shared_ptr<TransactionData> &data) {
+                                       const std::shared_ptr<TransactionData> &data) {
     auto transactionData = std::dynamic_pointer_cast<TransactionData>(data);
-    if (data->m_tableReference == 0) return;
+    if (!LuaIQuery::getCallbackReferences(data)) return;
     // Set the correct callback data for the queries of the transaction
     for (auto &pair: transactionData->m_queries) {
         auto query = pair.first;
@@ -108,7 +108,7 @@ void LuaTransaction::runAbortedCallback(GarrysMod::Lua::ILuaBase *LUA, const std
 void LuaTransaction::runErrorCallback(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,
                                       const std::shared_ptr<TransactionData> &data) {
     auto transactionData = std::dynamic_pointer_cast<TransactionData>(data);
-    if (data->m_tableReference == 0) return;
+    if (!LuaIQuery::getCallbackReferences(data)) return;
     // Set the correct callback data for the queries of the transaction
     for (auto &pair: transactionData->m_queries) {
         auto query = pair.first;
@@ -121,7 +121,8 @@ void LuaTransaction::runErrorCallback(GarrysMod::Lua::ILuaBase *LUA, const std::
 void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,
                                         const std::shared_ptr<TransactionData> &data) {
     auto transactionData = std::dynamic_pointer_cast<TransactionData>(data);
-    if (transactionData->m_tableReference == 0) return;
+    auto refs = LuaIQuery::getCallbackReferences(data);
+    if (!refs || refs->tableReference == 0) return;
     transactionData->setStatus(QUERY_COMPLETE);
     LUA->CreateTable();
     int index = 0;
@@ -129,28 +130,22 @@ void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Tra
     for (auto &pair: transactionData->m_queries) {
         LUA->PushNumber((double) (++index));
         auto query = pair.first;
-        //So we get the current data rather than caching it, if the same query is added multiple times.
-        LuaQuery::freeDataReference(LUA, *query);
         auto queryData = std::dynamic_pointer_cast<QueryData>(pair.second);
         query->setCallbackData(pair.second);
         int ref = LuaQuery::createDataReference(LUA, *query, *queryData);
         LUA->ReferencePush(ref);
+        LuaReferenceFree(LUA, ref);
         LUA->SetTable(-3);
-        //The last data reference can stay cached in the query and will be freed once the query is gc'ed
     }
-    if (!LuaIQuery::pushCallbackReference(LUA, data->m_successReference, data->m_tableReference,
+    if (!LuaIQuery::pushCallbackReference(LUA, refs->successReference, refs->tableReference,
                                           "onSuccess", data->isFirstData())) {
         LUA->Pop(); //Table of results
         return;
     }
-    LUA->ReferencePush(transactionData->m_tableReference);
+    LUA->ReferencePush(refs->tableReference);
     LUA->Push(-3); //Table of results
     LuaObject::pcallWithErrorReporter(LUA, 2);
 
     LUA->Pop(); //Table of results
 
-    for (auto &pair: transactionData->m_queries) {
-        //We should only cache the data for the duration of the callback
-        LuaQuery::freeDataReference(LUA, *pair.first);
-    }
 }

@@ -11,6 +11,14 @@
 
 class LuaIQuery : public LuaObject {
 public:
+    struct CallbackReferences {
+        int successReference = 0;
+        int errorReference = 0;
+        int abortReference = 0;
+        int onDataReference = 0;
+        int tableReference = 0;
+    };
+
     static void addMetaTableFunctions(ILuaBase *lua);
 
     std::shared_ptr<IQuery> m_query;
@@ -24,6 +32,11 @@ public:
     virtual std::shared_ptr<IQueryData> buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) = 0;
 
     static void referenceCallbacks(ILuaBase *LUA, int stackPosition, IQueryData &data);
+
+    static CallbackReferences *getCallbackReferences(const std::shared_ptr<IQueryData> &data);
+
+    static void finishLuaQueryData(ILuaBase *LUA, const std::shared_ptr<IQuery> &query,
+                                   const std::shared_ptr<IQueryData> &data);
 
     static void runAbortedCallback(ILuaBase *LUA, const std::shared_ptr<IQueryData> &data);
 

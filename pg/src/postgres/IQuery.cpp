@@ -4,7 +4,6 @@
 #include <algorithm>
 
 #include "Database.h"
-#include "../lua/LuaObject.h"
 
 IQuery::IQuery(std::shared_ptr<Database> database) : m_database(std::move(database)) {}
 
@@ -91,16 +90,3 @@ QueryStatus IQueryData::getStatus() { return m_status; }
 void IQueryData::setStatus(QueryStatus status) { m_status = status; }
 QueryResultStatus IQueryData::getResultStatus() { return m_resultStatus; }
 void IQueryData::setResultStatus(QueryResultStatus status) { m_resultStatus = status; }
-
-void IQueryData::finishLuaQueryData(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<IQuery> &query) {
-    if (m_tableReference != 0) {
-        LuaReferenceFree(LUA, m_tableReference);
-        m_tableReference = 0;
-    }
-    if (m_successReference != 0) LuaReferenceFree(LUA, m_successReference);
-    if (m_errorReference != 0) LuaReferenceFree(LUA, m_errorReference);
-    if (m_abortReference != 0) LuaReferenceFree(LUA, m_abortReference);
-    if (m_onDataReference != 0) LuaReferenceFree(LUA, m_onDataReference);
-    m_successReference = m_errorReference = m_abortReference = m_onDataReference = 0;
-    query->finishQueryData(shared_from_this());
-}

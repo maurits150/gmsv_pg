@@ -13,7 +13,6 @@ class TransactionData final : public IQueryData {
 
 public:
     std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> m_queries;
-    void finishLuaQueryData(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<IQuery> &transaction) override;
 
 protected:
     explicit TransactionData(std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> queries)

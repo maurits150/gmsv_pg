@@ -5,6 +5,10 @@
 #include "LuaTransaction.h"
 #include "LuaDatabase.h"
 
+#include <unordered_map>
+
+static std::unordered_map<IQueryData *, LuaIQuery::CallbackReferences> queryCallbackReferences;
+
 
 PG_LUA_FUNCTION(start) {
     auto query = LuaIQuery::getLuaObject<LuaIQuery>(LUA);
@@ -65,32 +69,34 @@ PG_LUA_FUNCTION(abort) {
         } else {
             LuaIQuery::runAbortedCallback(LUA, data);
         }
-        data->finishLuaQueryData(LUA, query->m_query);
+        LuaIQuery::finishLuaQueryData(LUA, query->m_query, data);
     }
     LUA->PushBool(!abortedData.empty());
     return 1;
 }
 
 void LuaIQuery::runAbortedCallback(ILuaBase *LUA, const std::shared_ptr<IQueryData> &data) {
-    if (data->m_tableReference == 0) return;
+    auto refs = getCallbackReferences(data);
+    if (!refs || refs->tableReference == 0) return;
 
-    if (!LuaIQuery::pushCallbackReference(LUA, data->m_abortReference, data->m_tableReference,
+    if (!LuaIQuery::pushCallbackReference(LUA, refs->abortReference, refs->tableReference,
                                           "onAborted", data->isFirstData())) {
         return;
     }
-    LUA->ReferencePush(data->m_tableReference);
+    LUA->ReferencePush(refs->tableReference);
     LuaObject::pcallWithErrorReporter(LUA, 1);
 }
 
 void LuaIQuery::runErrorCallback(ILuaBase *LUA, const std::shared_ptr<IQuery> &iQuery,
                                  const std::shared_ptr<IQueryData> &data) {
-    if (data->m_tableReference == 0) return;
+    auto refs = getCallbackReferences(data);
+    if (!refs || refs->tableReference == 0) return;
 
-    if (!LuaIQuery::pushCallbackReference(LUA, data->m_errorReference, data->m_tableReference,
+    if (!LuaIQuery::pushCallbackReference(LUA, refs->errorReference, refs->tableReference,
                                           "onError", data->isFirstData())) {
         return;
     }
-    LUA->ReferencePush(data->m_tableReference);
+    LUA->ReferencePush(refs->tableReference);
     auto error = data->getError();
     LUA->PushString(error.c_str());
     LUA->PushString(iQuery->getSQLString().c_str());
@@ -115,24 +121,53 @@ void LuaIQuery::addMetaTableFunctions(ILuaBase *LUA) {
 }
 
 void LuaIQuery::referenceCallbacks(ILuaBase *LUA, int stackPosition, IQueryData &data) {
+    auto &refs = queryCallbackReferences[&data];
     LUA->Push(stackPosition);
-    data.m_tableReference = LuaReferenceCreate(LUA);
+    refs.tableReference = LuaReferenceCreate(LUA);
 
-    if (data.m_successReference == 0) {
-        data.m_successReference = getFunctionReference(LUA, stackPosition, "onSuccess");
+    if (refs.successReference == 0) {
+        refs.successReference = getFunctionReference(LUA, stackPosition, "onSuccess");
     }
 
-    if (data.m_abortReference == 0) {
-        data.m_abortReference = getFunctionReference(LUA, stackPosition, "onAborted");
+    if (refs.abortReference == 0) {
+        refs.abortReference = getFunctionReference(LUA, stackPosition, "onAborted");
     }
 
-    if (data.m_onDataReference == 0) {
-        data.m_onDataReference = getFunctionReference(LUA, stackPosition, "onData");
+    if (refs.onDataReference == 0) {
+        refs.onDataReference = getFunctionReference(LUA, stackPosition, "onData");
     }
 
-    if (data.m_errorReference == 0) {
-        data.m_errorReference = getFunctionReference(LUA, stackPosition, "onError");
+    if (refs.errorReference == 0) {
+        refs.errorReference = getFunctionReference(LUA, stackPosition, "onError");
     }
+}
+
+LuaIQuery::CallbackReferences *LuaIQuery::getCallbackReferences(const std::shared_ptr<IQueryData> &data) {
+    auto it = queryCallbackReferences.find(data.get());
+    if (it == queryCallbackReferences.end()) return nullptr;
+    return &it->second;
+}
+
+void LuaIQuery::finishLuaQueryData(ILuaBase *LUA, const std::shared_ptr<IQuery> &query,
+                                   const std::shared_ptr<IQueryData> &data) {
+    if (auto transactionData = std::dynamic_pointer_cast<TransactionData>(data)) {
+        for (auto &pair : transactionData->m_queries) {
+            pair.first->finishQueryData(pair.second);
+        }
+    }
+
+    auto it = queryCallbackReferences.find(data.get());
+    if (it != queryCallbackReferences.end()) {
+        auto &refs = it->second;
+        if (refs.tableReference != 0) LuaReferenceFree(LUA, refs.tableReference);
+        if (refs.successReference != 0) LuaReferenceFree(LUA, refs.successReference);
+        if (refs.errorReference != 0) LuaReferenceFree(LUA, refs.errorReference);
+        if (refs.abortReference != 0) LuaReferenceFree(LUA, refs.abortReference);
+        if (refs.onDataReference != 0) LuaReferenceFree(LUA, refs.onDataReference);
+        queryCallbackReferences.erase(it);
+    }
+
+    query->finishQueryData(data);
 }
 
 void
@@ -159,7 +194,7 @@ LuaIQuery::runCallback(ILuaBase *LUA, const std::shared_ptr<IQuery> &iQuery, con
             break;
     }
 
-    data->finishLuaQueryData(LUA, iQuery);
+    LuaIQuery::finishLuaQueryData(LUA, iQuery, data);
 }
 
 void LuaIQuery::onDestroyedByLua(ILuaBase *LUA) {

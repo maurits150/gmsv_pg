@@ -40,8 +40,6 @@ static void dataToLua(Query &query,
 //Stores the data associated with the current result set of the query
 //Only called once per result set (and then cached)
 int LuaQuery::createDataReference(GarrysMod::Lua::ILuaBase *LUA, Query &query, QueryData &data) {
-    if (query.m_dataReference != 0)
-        return query.m_dataReference;
     LUA->CreateTable();
     int dataStackPosition = LUA->Top();
     if (query.hasCallbackData() && data.hasMoreResults()) {
@@ -61,8 +59,7 @@ int LuaQuery::createDataReference(GarrysMod::Lua::ILuaBase *LUA, Query &query, Q
             LUA->Pop(2); //data + row
         }
     }
-    query.m_dataReference = LuaReferenceCreate(LUA);
-    return query.m_dataReference;
+    return LuaReferenceCreate(LUA);
 }
 
 static void runOnDataCallbacks(
@@ -71,7 +68,10 @@ static void runOnDataCallbacks(
         const std::shared_ptr<IQueryData> &data,
         int dataReference
 ) {
-    if (!LuaIQuery::pushCallbackReference(LUA, data->m_onDataReference, data->m_tableReference,
+    auto refs = LuaIQuery::getCallbackReferences(data);
+    if (!refs || refs->tableReference == 0) return;
+
+    if (!LuaIQuery::pushCallbackReference(LUA, refs->onDataReference, refs->tableReference,
                                           "onData", data->isFirstData())) {
         return;
     }
@@ -87,7 +87,7 @@ static void runOnDataCallbacks(
         }
         int rowPosition = LUA->Top();
         LUA->Push(callbackPosition);
-        LUA->ReferencePush(data->m_tableReference);
+        LUA->ReferencePush(refs->tableReference);
         LUA->Push(rowPosition);
         LuaObject::pcallWithErrorReporter(LUA, 2);
 
@@ -99,20 +99,19 @@ static void runOnDataCallbacks(
 
 
 void LuaQuery::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Query>& query, const std::shared_ptr<QueryData> &data) {
-    //Need to clear old data, if it exists
-    freeDataReference(LUA, *query);
     int dataReference = LuaQuery::createDataReference(LUA, *query, *data);
     runOnDataCallbacks(LUA, query, data, dataReference);
 
-    if (!LuaIQuery::pushCallbackReference(LUA, data->m_successReference, data->m_tableReference,
+    auto refs = LuaIQuery::getCallbackReferences(data);
+    if (!refs || !LuaIQuery::pushCallbackReference(LUA, refs->successReference, refs->tableReference,
                                           "onSuccess", data->isFirstData())) {
-        freeDataReference(LUA, *query);
+        LuaReferenceFree(LUA, dataReference);
         return;
     }
-    LUA->ReferencePush(data->m_tableReference);
+    LUA->ReferencePush(refs->tableReference);
     LUA->ReferencePush(dataReference);
     LuaObject::pcallWithErrorReporter(LUA, 2);
-    freeDataReference(LUA, *query); //Only cache data for duration of callback
+    LuaReferenceFree(LUA, dataReference);
 }
 
 PG_LUA_FUNCTION(affectedRows) {
@@ -153,7 +152,6 @@ PG_LUA_FUNCTION(getData) {
         int ref = LuaQuery::createDataReference(LUA, *query, (QueryData &) *(query->callbackQueryData));
         LUA->ReferencePush(ref);
         LuaReferenceFree(LUA, ref);
-        query->m_dataReference = 0;
     }
     return 1;
 }
@@ -168,7 +166,6 @@ PG_LUA_FUNCTION(hasMoreResults) {
 PG_LUA_FUNCTION(getNextResults) {
     auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
     auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
-    LuaQuery::freeDataReference(LUA, *query);
     query->getNextResults();
     return 0;
 }
@@ -210,12 +207,4 @@ std::shared_ptr<IQueryData> LuaQuery::buildQueryData(ILuaBase *LUA, int stackPos
 
 void LuaQuery::onDestroyedByLua(ILuaBase *LUA) {
     LuaIQuery::onDestroyedByLua(LUA);
-    freeDataReference(LUA, *std::dynamic_pointer_cast<Query>(m_query));
-}
-
-void LuaQuery::freeDataReference(ILuaBase *LUA, Query &query) {
-    if (query.m_dataReference != 0) {
-        LuaReferenceFree(LUA, query.m_dataReference);
-        query.m_dataReference = 0;
-    }
 }

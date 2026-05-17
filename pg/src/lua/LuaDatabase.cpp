@@ -252,7 +252,7 @@ PG_LUA_FUNCTION(disconnect) {
         } else {
             LuaIQuery::runAbortedCallback(LUA, pair.second);
         }
-        pair.second->finishLuaQueryData(LUA, pair.first);
+        LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
 
     database->m_database->disconnect(wait);
@@ -316,7 +316,7 @@ PG_LUA_FUNCTION(abortAllQueries) {
         } else {
             LuaIQuery::runAbortedCallback(LUA, pair.second);
         }
-        pair.second->finishLuaQueryData(LUA, pair.first);
+        LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
     LUA->PushNumber((double) abortedQueries.size());
     return 1;
@@ -495,14 +495,14 @@ void LuaDatabase::think(ILuaBase *LUA) {
 void LuaDatabase::onDestroyedByLua(ILuaBase *LUA) {
     auto abortedQueries = m_database->abortAllQueries();
     for (const auto &pair: abortedQueries) {
-        pair.second->finishLuaQueryData(LUA, pair.first);
+        LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
     m_database->disconnect(true); //Wait for any outstanding queries to finish.
     //If this is called, LUA is either reloading or no queries exist in the query queue of the database, clear it
     //This needs to be cleared to avoid the queries leaking
     auto finishedQueries = m_database->takeFinishedQueries();
     for (const auto &pair: finishedQueries) {
-        pair.second->finishLuaQueryData(LUA, pair.first);
+        LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
 
     if (m_tableReference != 0) {

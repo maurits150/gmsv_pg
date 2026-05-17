@@ -11,7 +11,6 @@
 #include <utility>
 #include <vector>
 
-#include <GarrysMod/Lua/LuaBase.h>
 #include <pqxx/pqxx>
 
 #include "PGException.h"
@@ -93,14 +92,6 @@ public:
     QueryResultStatus getResultStatus();
     void setResultStatus(QueryResultStatus status);
     bool isFirstData() const { return m_wasFirstData; }
-
-    int m_successReference = 0;
-    int m_errorReference = 0;
-    int m_abortReference = 0;
-    int m_onDataReference = 0;
-    int m_tableReference = 0;
-
-    virtual void finishLuaQueryData(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<IQuery> &query);
 
 protected:
     std::string m_errorText;

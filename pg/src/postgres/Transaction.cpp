@@ -45,10 +45,3 @@ void Transaction::executeInTransaction(Database &database, pqxx::connection &con
         pair.first->executeInTransaction(database, connection, tx, pair.second);
     }
 }
-
-void TransactionData::finishLuaQueryData(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<IQuery> &transaction) {
-    for (auto &pair : m_queries) {
-        pair.first->finishQueryData(pair.second);
-    }
-    IQueryData::finishLuaQueryData(LUA, transaction);
-}
