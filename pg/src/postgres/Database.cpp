@@ -57,15 +57,44 @@ bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std:
     });
 }
 
+QueryAbortResult Database::abortQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
+    QueryAbortResult result;
+    bool wasRemoved = queryQueue.removeIf(
+        [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
+            return pair.first == query && pair.second == data;
+        });
+    if (wasRemoved) {
+        data->setStatus(QUERY_ABORTED);
+        data->setFinished(true);
+        result.completed.emplace_back(query, data);
+        result.requested = true;
+        result.requestedCount = 1;
+        return result;
+    }
+
+    if (data->getStatus() == QUERY_WAITING) {
+        data->setStatus(QUERY_ABORTED);
+        result.requested = true;
+        result.requestedCount = 1;
+        return result;
+    }
+
+    if (data->getStatus() == QUERY_RUNNING && cancelRunningQuery(data)) {
+        result.requested = true;
+        result.requestedCount = 1;
+    }
+    return result;
+}
+
 bool Database::cancelRunningQuery(const std::shared_ptr<IQueryData> &data) {
     std::lock_guard<std::mutex> lock(m_activeQueryMutex);
     if (m_activeQueryData != data || m_activeConnection == nullptr) return false;
     try {
-        data->setStatus(QUERY_ABORTED);
+        data->setCancellationRequested(true);
         m_activeConnection->cancel_query();
         return true;
     } catch (const std::exception &) {
-        data->setStatus(QUERY_RUNNING);
+        data->setCancellationRequested(false);
         return false;
     }
 }
@@ -96,6 +125,13 @@ void Database::disconnect(bool waitForThread) {
 void Database::shutdown() {
     bool wasAlreadyShuttingDown = m_shuttingDown.exchange(true);
     if (wasAlreadyShuttingDown) return;
+
+    std::shared_ptr<IQueryData> activeData;
+    {
+        std::lock_guard<std::mutex> lock(m_activeQueryMutex);
+        activeData = m_activeQueryData;
+    }
+    if (activeData) cancelRunningQuery(activeData);
 
     auto queuedQueries = queryQueue.clear();
     for (auto &pair : queuedQueries) {
@@ -130,14 +166,28 @@ bool Database::setCharacterSet(const std::string &characterSet) {
     return true;
 }
 
-std::deque<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> Database::abortAllQueries() {
+QueryAbortResult Database::abortAllQueries() {
+    QueryAbortResult result;
     auto canceled = queryQueue.clear();
     for (auto &pair : canceled) {
         if (!pair.second) continue;
         pair.second->setStatus(QUERY_ABORTED);
         pair.second->setFinished(true);
+        result.completed.push_back(pair);
+        result.requested = true;
+        result.requestedCount++;
     }
-    return canceled;
+
+    std::shared_ptr<IQueryData> activeData;
+    {
+        std::lock_guard<std::mutex> lock(m_activeQueryMutex);
+        activeData = m_activeQueryData;
+    }
+    if (activeData && cancelRunningQuery(activeData)) {
+        result.requested = true;
+        result.requestedCount++;
+    }
+    return result;
 }
 
 DatabaseStatus Database::status() const { return m_status; }
@@ -196,13 +246,14 @@ void Database::connectRun() {
         std::lock_guard<std::mutex> lock(m_connectMutex);
         if (!attemptConnection()) {
             m_success = false;
-        m_connectionDone = true;
-        m_status = DATABASE_CONNECTION_FAILED;
-        m_connectWakeupVariable.notify_one();
-        disconnected = true;
-        m_canWait = false;
-        queryQueue.close();
-        return;
+            m_connectionDone = true;
+            m_status = DATABASE_CONNECTION_FAILED;
+            m_connectWakeupVariable.notify_one();
+            disconnected = true;
+            m_canWait = false;
+            completeQueuedQueriesWithError(m_connectionError.empty() ? "Connection to database failed" : m_connectionError);
+            queryQueue.close();
+            return;
         }
         m_success = true;
         m_connectionError = "";
@@ -274,13 +325,11 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
             m_activeQueryData.reset();
             m_activeConnection = nullptr;
         }
-        if (data->getStatus() == QUERY_ABORTED) {
-            data->setResultStatus(QUERY_NONE);
-            return;
-        }
+        data->setCancellationRequested(false);
         data->setResultStatus(QUERY_SUCCESS);
     } catch (const pqxx::broken_connection &error) {
-        if (data->getStatus() == QUERY_ABORTED) {
+        if (data->isCancellationRequested()) {
+            data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
@@ -288,7 +337,8 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const pqxx::sql_error &error) {
-        if (data->getStatus() == QUERY_ABORTED) {
+        if (data->isCancellationRequested()) {
+            data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
@@ -297,7 +347,8 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const PGConnectionException &error) {
-        if (data->getStatus() == QUERY_ABORTED) {
+        if (data->isCancellationRequested()) {
+            data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
@@ -305,12 +356,25 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const std::exception &error) {
-        if (data->getStatus() == QUERY_ABORTED) {
+        if (data->isCancellationRequested()) {
+            data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
+    }
+}
+
+void Database::completeQueuedQueriesWithError(const std::string &reason) {
+    auto queuedQueries = queryQueue.clear();
+    for (auto &pair : queuedQueries) {
+        if (!pair.second) continue;
+        pair.second->setError(reason);
+        pair.second->setResultStatus(QUERY_ERROR);
+        pair.second->setStatus(QUERY_COMPLETE);
+        finishedQueries.put(pair);
+        pair.second->setFinished(true);
     }
 }
 

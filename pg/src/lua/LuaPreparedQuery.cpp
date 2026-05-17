@@ -1,13 +1,23 @@
 // Derived from MySQLOO runtime code (LGPL-2.1); adapted for PostgreSQL gmsv_pg.
 #include "LuaPreparedQuery.h"
 
+#include <cmath>
+#include <limits>
+
+static unsigned int getParameterIndex(ILuaBase *LUA, int stackPosition) {
+    LUA->CheckType(stackPosition, GarrysMod::Lua::Type::Number);
+    double index = LUA->GetNumber(stackPosition);
+    if (index < 1 || std::floor(index) != index || index > std::numeric_limits<unsigned int>::max()) {
+        throw PGException("Index must be greater than 0 and an integer");
+    }
+    return static_cast<unsigned int>(index);
+}
+
 PG_LUA_FUNCTION(setNumber) {
     auto luaQuery = LuaObject::getLuaObject<LuaPreparedQuery>(LUA);
     auto query = (PreparedQuery *) luaQuery->m_query.get();
-    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
     LUA->CheckType(3, GarrysMod::Lua::Type::Number);
-    double index = LUA->GetNumber(2);
-    auto uIndex = (unsigned int) index;
+    auto uIndex = getParameterIndex(LUA, 2);
     double value = LUA->GetNumber(3);
 
     query->setNumber(uIndex, value);
@@ -17,12 +27,10 @@ PG_LUA_FUNCTION(setNumber) {
 PG_LUA_FUNCTION(setString) {
     auto luaQuery = LuaObject::getLuaObject<LuaPreparedQuery>(LUA);
     auto query = (PreparedQuery *) luaQuery->m_query.get();
-    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
     LUA->CheckType(3, GarrysMod::Lua::Type::String);
-    double index = LUA->GetNumber(2);
     unsigned int length = 0;
     const char *string = LUA->GetString(3, &length);
-    auto uIndex = (unsigned int) index;
+    auto uIndex = getParameterIndex(LUA, 2);
     query->setString(uIndex, std::string(string, length));
     return 0;
 }
@@ -30,10 +38,8 @@ PG_LUA_FUNCTION(setString) {
 PG_LUA_FUNCTION(setBoolean) {
     auto luaQuery = LuaObject::getLuaObject<LuaPreparedQuery>(LUA);
     auto query = (PreparedQuery *) luaQuery->m_query.get();
-    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
     LUA->CheckType(3, GarrysMod::Lua::Type::Bool);
-    double index = LUA->GetNumber(2);
-    auto uIndex = (unsigned int) index;
+    auto uIndex = getParameterIndex(LUA, 2);
     bool value = LUA->GetBool(3);
     query->setBoolean(uIndex, value);
     return 0;
@@ -42,9 +48,7 @@ PG_LUA_FUNCTION(setBoolean) {
 PG_LUA_FUNCTION(setNull) {
     auto luaQuery = LuaObject::getLuaObject<LuaPreparedQuery>(LUA);
     auto query = (PreparedQuery *) luaQuery->m_query.get();
-    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
-    double index = LUA->GetNumber(2);
-    auto uIndex = (unsigned int) index;
+    auto uIndex = getParameterIndex(LUA, 2);
     query->setNull(uIndex);
     return 0;
 }

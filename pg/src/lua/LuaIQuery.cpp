@@ -13,7 +13,12 @@ static std::unordered_map<IQueryData *, LuaIQuery::CallbackReferences> queryCall
 PG_LUA_FUNCTION(start) {
     auto query = LuaIQuery::getLuaObject<LuaIQuery>(LUA);
     auto queryData = query->buildQueryData(LUA, 1, true);
-    query->m_query->start(queryData);
+    try {
+        query->m_query->start(queryData);
+    } catch (...) {
+        LuaIQuery::finishLuaQueryData(LUA, query->m_query, queryData);
+        throw;
+    }
     return 0;
 }
 
@@ -63,13 +68,14 @@ PG_LUA_FUNCTION(isRunning) {
 PG_LUA_FUNCTION(abort) {
     auto query = LuaIQuery::getLuaObject<LuaIQuery>(LUA);
     auto abortResult = query->m_query->abort();
-    for (auto &data: abortResult.completed) {
-        if (auto transaction = std::dynamic_pointer_cast<Transaction>(query->m_query)) {
+    for (auto &pair: abortResult.completed) {
+        auto &data = pair.second;
+        if (auto transaction = std::dynamic_pointer_cast<Transaction>(pair.first)) {
             LuaTransaction::runAbortedCallback(LUA, transaction, std::dynamic_pointer_cast<TransactionData>(data));
         } else {
             LuaIQuery::runAbortedCallback(LUA, data);
         }
-        LuaIQuery::finishLuaQueryData(LUA, query->m_query, data);
+        LuaIQuery::finishLuaQueryData(LUA, pair.first, data);
     }
     LUA->PushBool(abortResult.requested);
     return 1;

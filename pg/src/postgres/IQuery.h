@@ -38,13 +38,15 @@ enum QueryOption {
     OPTION_CACHE = 8,
 };
 
+class IQuery;
 class IQueryData;
 
 struct QueryAbortResult {
     // True when abort either completed queued work immediately or requested cancellation of running work.
     bool requested = false;
-    // Query data whose callbacks can be completed synchronously by the caller.
-    std::vector<std::shared_ptr<IQueryData>> completed;
+    size_t requestedCount = 0;
+    // Query executions whose callbacks can be completed synchronously by the caller.
+    std::vector<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> completed;
 };
 
 class IQuery : public std::enable_shared_from_this<IQuery> {
@@ -95,6 +97,8 @@ public:
     bool isFinished();
     void setFinished(bool isFinished);
     void waitUntilFinished();
+    void setCancellationRequested(bool requested);
+    bool isCancellationRequested() const;
     QueryStatus getStatus();
     void setStatus(QueryStatus status);
     QueryResultStatus getResultStatus();
@@ -104,6 +108,7 @@ public:
 protected:
     std::string m_errorText;
     std::atomic<bool> finished{false};
+    std::atomic<bool> cancellationRequested{false};
     std::mutex m_finishMutex;
     std::condition_variable m_finishCondition;
     std::atomic<QueryStatus> m_status{QUERY_NOT_RUNNING};

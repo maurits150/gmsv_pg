@@ -57,6 +57,7 @@ public:
 
     void enqueueQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     bool swapQueryToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
+    QueryAbortResult abortQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     // Requests PostgreSQL cancellation for the query data currently executing on the worker connection.
     bool cancelRunningQuery(const std::shared_ptr<IQueryData> &data);
 
@@ -71,7 +72,7 @@ public:
     std::string escape(const std::string &str);
     bool setCharacterSet(const std::string &characterSet);
 
-    std::deque<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> abortAllQueries();
+    QueryAbortResult abortAllQueries();
     std::deque<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> takeFinishedQueries() {
         return finishedQueries.clear();
     }
@@ -112,6 +113,7 @@ private:
     void connectRun();
     void run();
     void runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
+    void completeQueuedQueriesWithError(const std::string &reason);
     void failWaitingQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
                           const std::string &reason);
     bool attemptConnection();
@@ -137,10 +139,10 @@ private:
     std::string m_hostInfo;
     unsigned int m_serverVersion = 0;
 
-    bool shouldAutoReconnect = true;
+    std::atomic<bool> shouldAutoReconnect{true};
     bool useMultiStatements = false;
     bool startedConnecting = false;
-    bool m_canWait = false;
+    std::atomic<bool> m_canWait{false};
     std::atomic<bool> m_shuttingDown{false};
     std::atomic<bool> m_success{true};
     std::atomic<bool> disconnected{false};

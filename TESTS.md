@@ -891,6 +891,47 @@ state.tests = {
 		end
 	},
 	{
+		name = "query start after disconnect rolls back callback refs",
+		run = function(done)
+			connectDatabase(function(db)
+				db:disconnect(true)
+				local query = db:query("SELECT 1")
+				function query:onSuccess() end
+				function query:onError() end
+				local outstandingBefore = pg.referenceCreatedCount() - pg.referenceFreedCount()
+				assertThrows("start after disconnect", function() query:start() end, "disconnected")
+				collectgarbage()
+				collectgarbage()
+				local outstandingAfter = pg.referenceCreatedCount() - pg.referenceFreedCount()
+				if not assertTruthy("start failure callback refs", outstandingAfter <= outstandingBefore) then return end
+				pass("start after disconnect refs")
+				done()
+			end)
+		end
+	},
+	{
+		name = "queued query receives connection failure callback",
+		run = function(done)
+			local db = pg.connect("127.0.0.1", "postgres", "postgres", "gmsv_pg_test", 1)
+			local failed = false
+			function db:onConnectionFailed()
+				failed = true
+			end
+			local query = db:query("SELECT 1")
+			function query:onSuccess()
+				fail("connect failure queued query", "unexpected success")
+			end
+			function query:onError(err)
+				if not assertTruthy("db connection failed before query", failed) then return end
+				if not assertTruthy("queued query error text", err and #err > 0) then return end
+				pass("queued connection failure")
+				done()
+			end
+			query:start()
+			db:connect()
+		end
+	},
+	{
 		name = "commandStatus currently throws and oid returns numeric",
 		run = function(done)
 			connectDatabase(function(db)
@@ -974,13 +1015,21 @@ state.tests = {
 						runQuery(db, "CREATE TABLE gmsv_pg_abort_all (value int4)", function()
 							runQuery(lockDb, "SELECT pg_advisory_lock(" .. lockKey .. ")", function()
 								local blocker = db:query("SELECT pg_advisory_lock(" .. lockKey .. ")")
-								function blocker:onSuccess()
+								local function finishCheck()
 									runQuery(db, "SELECT pg_advisory_unlock(" .. lockKey .. ")", function()
 										runQuery(db, "SELECT count(*)::int AS count FROM gmsv_pg_abort_all", function(rows)
 											if not assertEqual("abortAll count", rows[1].count, 0) then return end
 											pass("abortAllQueries")
 											done()
 										end)
+									end)
+								end
+								function blocker:onSuccess()
+									finishCheck()
+								end
+								function blocker:onAborted()
+									runQuery(lockDb, "SELECT pg_advisory_unlock(" .. lockKey .. ")", function()
+										finishCheck()
 									end)
 								end
 								function blocker:onError(err) fail("abortAll blocker", err) end
@@ -993,7 +1042,6 @@ state.tests = {
 									q2:start()
 									local aborted = db:abortAllQueries()
 									if not assertTruthy("abortAll returned count", aborted >= 2) then return end
-									runQuery(lockDb, "SELECT pg_advisory_unlock(" .. lockKey .. ")", function() end)
 								end)
 							end)
 						end)
@@ -1023,6 +1071,31 @@ state.tests = {
 				query:start()
 				timer.Simple(0.2, function()
 					if not assertEqual("running abort returned", query:abort(), true) then return end
+				end)
+			end)
+		end
+	},
+	{
+		name = "abortAllQueries cancels running PostgreSQL work",
+		run = function(done)
+			connectDatabase(function(db)
+				local startedAt = SysTime()
+				local query = db:query("SELECT pg_sleep(5)")
+				function query:onSuccess()
+					fail("abortAll running", "unexpected success")
+				end
+				function query:onError(err)
+					fail("abortAll running", "unexpected error", err)
+				end
+				function query:onAborted()
+					local elapsed = SysTime() - startedAt
+					if not assertTruthy("abortAll running elapsed", elapsed < 2.0) then return end
+					pass("abortAll running query", elapsed)
+					done()
+				end
+				query:start()
+				timer.Simple(0.2, function()
+					if not assertTruthy("abortAll running count", db:abortAllQueries() >= 1) then return end
 				end)
 			end)
 		end
@@ -2088,6 +2161,9 @@ The executable suite above covers:
 - Transaction rollback on child query error.
 - Waiting-query abort behavior.
 - `abortAllQueries` behavior.
+- Failed-start callback-reference rollback.
+- Queued query callback delivery after initial connection failure.
+- Active query cancellation through `abortAllQueries()`.
 - Running query cancellation through `query:abort()`.
 - `lastInsert()` throwing with `RETURNING` guidance.
 - `setMultiStatements(true)` throwing until multi-result chains are implemented.

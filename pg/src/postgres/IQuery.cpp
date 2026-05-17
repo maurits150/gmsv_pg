@@ -59,21 +59,10 @@ QueryAbortResult IQuery::abort() {
 
     auto runningQueries = runningQueryData;
     for (auto &data : runningQueries) {
-        bool wasRemoved = database->queryQueue.removeIf(
-            [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
-                return pair.second == data;
-            });
-        if (wasRemoved) {
-            data->setStatus(QUERY_ABORTED);
-            data->setFinished(true);
-            result.completed.push_back(data);
-            result.requested = true;
-        } else if (data->getStatus() == QUERY_WAITING) {
-            data->setStatus(QUERY_ABORTED);
-            result.requested = true;
-        } else if (data->getStatus() == QUERY_RUNNING && database->cancelRunningQuery(data)) {
-            result.requested = true;
-        }
+        auto singleResult = database->abortQuery(shared_from_this(), data);
+        if (singleResult.requested) result.requested = true;
+        result.requestedCount += singleResult.requestedCount;
+        result.completed.insert(result.completed.end(), singleResult.completed.begin(), singleResult.completed.end());
     }
     return result;
 }
@@ -99,6 +88,8 @@ void IQueryData::waitUntilFinished() {
     std::unique_lock<std::mutex> lock(m_finishMutex);
     m_finishCondition.wait(lock, [this] { return finished.load(); });
 }
+void IQueryData::setCancellationRequested(bool requested) { cancellationRequested = requested; }
+bool IQueryData::isCancellationRequested() const { return cancellationRequested; }
 QueryStatus IQueryData::getStatus() { return m_status; }
 void IQueryData::setStatus(QueryStatus status) { m_status = status; }
 QueryResultStatus IQueryData::getResultStatus() { return m_resultStatus; }

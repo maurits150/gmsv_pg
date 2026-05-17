@@ -246,7 +246,7 @@ PG_LUA_FUNCTION(disconnect) {
         wait = LUA->GetBool(2);
     }
     auto abortedQueries = database->m_database->abortAllQueries();
-    for (const auto &pair: abortedQueries) {
+    for (const auto &pair: abortedQueries.completed) {
         if (auto transaction = std::dynamic_pointer_cast<Transaction>(pair.first)) {
             LuaTransaction::runAbortedCallback(LUA, transaction, std::dynamic_pointer_cast<TransactionData>(pair.second));
         } else {
@@ -310,7 +310,7 @@ PG_LUA_FUNCTION(setCachePreparedStatements) {
 PG_LUA_FUNCTION(abortAllQueries) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     auto abortedQueries = database->m_database->abortAllQueries();
-    for (const auto &pair: abortedQueries) {
+    for (const auto &pair: abortedQueries.completed) {
         if (auto transaction = std::dynamic_pointer_cast<Transaction>(pair.first)) {
             LuaTransaction::runAbortedCallback(LUA, transaction, std::dynamic_pointer_cast<TransactionData>(pair.second));
         } else {
@@ -318,7 +318,7 @@ PG_LUA_FUNCTION(abortAllQueries) {
         }
         LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
-    LUA->PushNumber((double) abortedQueries.size());
+    LUA->PushNumber((double) abortedQueries.requestedCount);
     return 1;
 }
 
@@ -494,7 +494,7 @@ void LuaDatabase::think(ILuaBase *LUA) {
 
 void LuaDatabase::onDestroyedByLua(ILuaBase *LUA) {
     auto abortedQueries = m_database->abortAllQueries();
-    for (const auto &pair: abortedQueries) {
+    for (const auto &pair: abortedQueries.completed) {
         LuaIQuery::finishLuaQueryData(LUA, pair.first, pair.second);
     }
     m_database->disconnect(true); //Wait for any outstanding queries to finish.
