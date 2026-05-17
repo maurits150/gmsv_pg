@@ -1,32 +1,64 @@
 # gmsv_pg
 A PostgreSQL adapter for Garry's Mod.
 
+> **Note:** this is a vibe-coded project: it has been developed through heavy AI-assisted iteration and should not be trusted without review/testing like any other native server module before production use.
+
+## Credits and provenance
+
+- Original **gmsv_pg** project/codebase: TeslaCloud Studios, MIT licensed. See `LICENSE.md`.
+- **MySQLOO** runtime/callback/object model: FredyH/MySQLOO contributors, LGPL-2.1 licensed. Portions of the Lua runtime layer are derived/adapted from MySQLOO; see `LICENSE_MYSQLOO_LGPL.md`.
+- PostgreSQL behavior in this fork/rework is intentionally PostgreSQL-first while keeping a MySQLOO-shaped Lua API for migration ergonomics.
+
 ## Installation
-The pre-compiled binaries are located in the `releases` section of this repo.
 
-Copy-paste the `gmsv_pg_*.dll` to your server's `lua/bin` folder, where `*` if your platform's suffix (win32 or linux). Then follow the platform-specific instructions below:
+This chapter covers installing a prebuilt module into a Garry's Mod server. If you are building from source, see [Building](#building) first, then come back here to install the produced binary.
 
-### Windows
-1. Make sure you have Microsoft Visual C++ 2015 Redist installed
-2. Navigate to the `runtime_depends/windows` folder
-3. Copy-paste the folder's contents to your server's root (where srcds.exe is)
+### 1. Check your server architecture
 
-### Linux
-On Linux there are two ways to install dependencies.
+From the server console, run:
 
-**via apt**
+```lua
+lua_run print(jit.os, jit.arch)
+```
+
+Use the module binary matching that output. Current verified path is Linux 32-bit Garry's Mod (`Linux x86`). Windows support is inherited from the original project layout but is currently unverified in this fork/rework.
+
+### 2. Install the module binary
+
+1. Create this folder if it does not exist:
+
+   ```text
+   garrysmod/lua/bin/
+   ```
+
+2. Copy the correct module binary into that folder:
+
+   ```text
+   garrysmod/lua/bin/gmsv_pg_linux.dll   # Linux 32-bit
+   garrysmod/lua/bin/gmsv_pg_win32.dll   # Windows 32-bit, unverified in this fork
+   ```
+
+The built Linux binary is produced at `pg/bin/gmsv_pg_linux.dll`.
+
+### 3. Install runtime dependencies
+
+The module dynamically uses PostgreSQL's client library (`libpq`). The PostgreSQL runtime dependency must be loadable by SRCDS/Garry's Mod.
+
+#### Linux verified path
+
+Install the 32-bit PostgreSQL client development/runtime packages:
+
 ```sh
-# make sure you have postgresql repositories added beforehand!
 sudo dpkg --add-architecture i386
 sudo apt-get update
 sudo apt-get install build-essential g++-multilib libc6-dev-i386 linux-libc-dev:i386 libpq-dev:i386
 ```
 
-**the lazy way**
-1. Navigate to `runtime_depends/linux`
-2. Copy-paste the `libpq.so.5` file to your server's root (where srcds_linux is)
+Then either rely on the system loader finding the installed 32-bit libraries, or copy the bundled runtime dependency beside the server executable:
 
-Please note that even if you do the "lazy way" it might still be necessary to `apt-get` the `libpq-dev:i386` package. If you run into issues, please make sure that it's the first step that you take before complaining.
+```text
+runtime_depends/linux/libpq.so.5 -> server root next to srcds_linux
+```
 
 The bundled `runtime_depends/linux/libpq.so.5` must match the SSL/runtime libraries available on the host. If the module fails to load with an error like `libssl.so.1.1: cannot open shared object file`, refresh the bundled runtime dependency from the installed 32-bit libpq package:
 
@@ -35,6 +67,29 @@ cp /lib/i386-linux-gnu/libpq.so.5 runtime_depends/linux/libpq.so.5
 ```
 
 Fully static libpq linking is not currently used because Debian's `libpq.a` depends on PostgreSQL internal support archives that are not shipped with the normal `libpq-dev:i386` package.
+
+#### Windows unverified path
+
+Windows is not currently verified in this fork/rework. If you try it:
+
+1. Install the Microsoft Visual C++ Redistributable required by your server/module build.
+2. Copy `gmsv_pg_win32.dll` into `garrysmod/lua/bin/`.
+3. Copy the contents of `runtime_depends/windows` to the server root next to `srcds.exe` so PostgreSQL client DLLs can be loaded.
+
+### 4. Verify the module loads
+
+Restart the server and run:
+
+```lua
+lua_run require("pg") print(pg.VERSION, pg.MINOR_VERSION)
+```
+
+If this fails, check:
+
+- the binary is in `garrysmod/lua/bin/`
+- the binary suffix matches `jit.os` / `jit.arch`
+- PostgreSQL client runtime libraries are loadable by the server
+- on Linux, the 32-bit `libpq` runtime and its SSL dependencies match the host
 
 ## Building
 
@@ -129,6 +184,8 @@ INSERT INTO users (name) VALUES ($1) RETURNING id
 
 The API is MySQLOO-shaped, but SQL and connection behavior are PostgreSQL-native. Unsupported MySQL-only compatibility methods throw instead of pretending to work.
 
+Callback examples use Lua's colon syntax. For example, `function query:onSuccess(rows)` receives the query object as `self` and the result rows as the next argument. The equivalent dot-style signature is `function query.onSuccess(query, rows)`.
+
 ### Module
 
 #### `pg.connect(host, user, password, database, port, unixSocket)`
@@ -161,6 +218,27 @@ local db = pg.connect({
 #### `pg.new_connection(...)`
 
 Alias for `pg.connect(...)`.
+
+#### Version fields
+
+```lua
+pg.VERSION
+pg.MINOR_VERSION
+```
+
+String version fields exported for MySQLOO-shaped compatibility.
+
+#### Diagnostic counters
+
+These functions are exposed for debugging/tests and are not needed for normal database code:
+
+```lua
+pg.objectCount()
+pg.allocationCount()
+pg.deallocationCount()
+pg.referenceCreatedCount()
+pg.referenceFreedCount()
+```
 
 ### Constants
 
@@ -214,7 +292,7 @@ Reconnect callbacks are for internal reconnect attempts after an established con
 
 #### `db:wait()`
 
-Blocks until the initial connection attempt completes, then drains callbacks for that database.
+Blocks until the initial connection attempt completes, then drains callbacks for that database. This freezes the server while waiting; prefer normal asynchronous callbacks unless blocking is truly required.
 
 #### `db:disconnect(wait)`
 
@@ -272,7 +350,7 @@ db:setSSLSettings(key, cert, ca, capath, cipher)
 db:setConnectTimeout(seconds)
 ```
 
-`capath` and `cipher` currently throw because they do not have exact libpq equivalents in this implementation.
+`key`, `cert`, and `ca` are optional. `capath` and `cipher` currently throw because they do not have exact libpq equivalents in this implementation.
 
 Unsupported compatibility methods:
 
@@ -302,7 +380,7 @@ function query:onAborted() end
 
 #### `query:wait(swapToFront)`
 
-Blocks until this query execution completes and drains callbacks for the owning database. If `swapToFront` is true, attempts to move the queued query to the front before waiting.
+Blocks until this query execution completes and drains callbacks for the owning database. If `swapToFront` is true, attempts to move the queued query to the front before waiting. This can lag/freeze the server; use asynchronous callbacks in normal gameplay code.
 
 #### `query:abort()`
 
@@ -364,6 +442,10 @@ Methods:
 
 Indexes are positive integers. Values are snapshotted when `query:start()` or `transaction:addQuery(query)` builds an execution.
 
+String parameters are sent separately from the SQL text; do not pre-escape values before passing them to `query:setString()`.
+
+Prepared query objects can be reused. Change parameters and call `query:start()` again to queue another execution; each execution receives its own parameter snapshot.
+
 Unsupported:
 
 ```lua
@@ -401,6 +483,8 @@ Methods:
 - `tx:start()`, `tx:wait()`, `tx:abort()`, `tx:isRunning()`, `tx:error()` — inherited query methods.
 
 Child query callbacks are suppressed inside transactions. The transaction callback fires once after commit or rollback.
+
+Transaction objects are one-shot execution units. Calling `tx:start()` more than once throws; create a new transaction object for retries or repeated work.
 
 ### Result conversion
 

@@ -1,4 +1,15 @@
-MIT License
+gmsv_pg composite license notice
+================================
+
+This repository contains code under more than one license:
+
+- Original gmsv_pg code is licensed under the MIT License below.
+- MySQLOO-derived runtime/callback code is licensed under the GNU Lesser General Public License version 2.1. See `LICENSE_MYSQLOO_LGPL.md` for the full LGPL-2.1 text.
+- Files that explicitly state they are derived from MySQLOO runtime code are covered by the MySQLOO/LGPL-2.1 terms for those portions.
+- Other third-party vendored code may carry its own license file in its directory.
+
+Original gmsv_pg MIT License
+---------------------------
 
 Copyright (c) 2018 TeslaCloud Studios
 
