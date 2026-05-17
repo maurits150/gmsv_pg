@@ -75,13 +75,14 @@ public:
     std::shared_ptr<IQueryData> callbackQueryData;
 
 protected:
+    virtual void validateStart(const std::shared_ptr<IQueryData> &data);
     virtual void executeStatement(Database &database, pqxx::connection &connection,
                                   const std::shared_ptr<IQueryData> &data) = 0;
     virtual void executeInTransaction(Database &database, pqxx::connection &connection, pqxx::work &transaction,
                                       const std::shared_ptr<IQueryData> &data) = 0;
 
     std::shared_ptr<Database> m_database;
-    int m_options = OPTION_NAMED_FIELDS | OPTION_INTERPRET_DATA | OPTION_CACHE;
+    int m_options = OPTION_NAMED_FIELDS | OPTION_INTERPRET_DATA;
     std::deque<std::shared_ptr<IQueryData>> runningQueryData;
     bool hasBeenStarted = false;
 };

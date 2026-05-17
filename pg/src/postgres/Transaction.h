@@ -27,6 +27,7 @@ public:
     std::string getSQLString() override { return ""; }
 
 protected:
+    void validateStart(const std::shared_ptr<IQueryData> &data) override;
     void executeStatement(Database &database, pqxx::connection &connection,
                           const std::shared_ptr<IQueryData> &data) override;
     void executeInTransaction(Database &database, pqxx::connection &connection, pqxx::work &transaction,

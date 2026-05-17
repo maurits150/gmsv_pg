@@ -1,8 +1,6 @@
 // Derived from MySQLOO runtime code (LGPL-2.1); adapted for PostgreSQL gmsv_pg.
 #include "GarrysMod/Lua/Interface.h"
 #include "../postgres/Database.h"
-#include <iostream>
-#include <fstream>
 #include "LuaObject.h"
 #include "LuaDatabase.h"
 #include "LuaTransaction.h"

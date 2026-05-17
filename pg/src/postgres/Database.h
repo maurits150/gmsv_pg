@@ -89,11 +89,10 @@ public:
     bool attemptReconnect();
     std::deque<std::pair<bool, std::string>> takeReconnectEvents();
 
-    void setShouldAutoReconnect(bool autoReconnect);
+    void setAutoReconnect(bool autoReconnect);
     void setMultiStatements(bool multiStatement);
     bool allowsMultiStatements() const { return useMultiStatements; }
-    void setCachePreparedStatements(bool cachePreparedStatements);
-    bool shouldCachePreparedStatements() const { return cachePreparedStatements; }
+    void setCachePreparedStatements(bool);
     void setConnectTimeout(unsigned int timeout);
     void setReadTimeout(unsigned int timeout);
     void setWriteTimeout(unsigned int timeout);
@@ -104,6 +103,8 @@ public:
     void waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
 
 private:
+    class ActiveQueryGuard;
+
     Database(std::string host, std::string username, std::string password, std::string database,
              unsigned int port, std::string unixSocket);
     explicit Database(std::string connectionString);
@@ -114,7 +115,7 @@ private:
     void run();
     void runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     void completeQueuedQueriesWithError(const std::string &reason);
-    void failWaitingQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
+    void completeQueryWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
                           const std::string &reason);
     bool attemptConnection();
     std::string buildConnectionString() const;
@@ -147,7 +148,6 @@ private:
     std::atomic<bool> m_success{true};
     std::atomic<bool> disconnected{false};
     std::atomic<bool> m_connectionDone{false};
-    std::atomic<bool> cachePreparedStatements{true};
     std::atomic<DatabaseStatus> m_status{DATABASE_NOT_CONNECTED};
 
     std::string database;

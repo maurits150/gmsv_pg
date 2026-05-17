@@ -104,7 +104,7 @@ void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Tra
         auto query = pair.first;
         auto queryData = std::dynamic_pointer_cast<QueryData>(pair.second);
         query->setCallbackData(pair.second);
-        int ref = LuaQuery::createDataReference(LUA, *query, *queryData);
+        int ref = LuaQuery::createResultTableReference(LUA, *query, *queryData);
         LUA->ReferencePush(ref);
         LuaReferenceFree(LUA, ref);
         LUA->SetTable(-3);

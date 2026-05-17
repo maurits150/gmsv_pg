@@ -7,6 +7,12 @@ std::shared_ptr<Transaction> Transaction::create(const std::shared_ptr<Database>
     return std::shared_ptr<Transaction>(new Transaction(database));
 }
 
+void Transaction::validateStart(const std::shared_ptr<IQueryData> &) {
+    if (hasBeenStarted) {
+        throw PGException("Transaction already started.");
+    }
+}
+
 void Transaction::executeStatement(Database &database, pqxx::connection &connection,
                                    const std::shared_ptr<IQueryData> &ptr) {
     auto data = std::dynamic_pointer_cast<TransactionData>(ptr);

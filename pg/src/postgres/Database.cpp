@@ -32,6 +32,25 @@ Database::Database(std::string connectionString)
 Database::Database(std::vector<std::pair<std::string, std::string>> options)
     : port(0), optionTable(std::move(options)) {}
 
+class Database::ActiveQueryGuard {
+public:
+    ActiveQueryGuard(Database &database, std::shared_ptr<IQueryData> data)
+            : database(database) {
+        std::lock_guard<std::mutex> lock(database.m_activeQueryMutex);
+        database.m_activeQueryData = std::move(data);
+        database.m_activeConnection = database.m_connection.get();
+    }
+
+    ~ActiveQueryGuard() {
+        std::lock_guard<std::mutex> lock(database.m_activeQueryMutex);
+        database.m_activeQueryData.reset();
+        database.m_activeConnection = nullptr;
+    }
+
+private:
+    Database &database;
+};
+
 Database::~Database() {
     shutdown();
     if (m_thread.joinable()) m_thread.join();
@@ -52,7 +71,7 @@ void Database::enqueueQuery(const std::shared_ptr<IQuery> &query, const std::sha
 }
 
 bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
-    return queryQueue.swapToFrontIf([&](std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> pair) {
+    return queryQueue.swapToFrontIf([&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
         return pair.first == query && pair.second == data;
     });
 }
@@ -60,9 +79,9 @@ bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std:
 QueryAbortResult Database::abortQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
     QueryAbortResult result;
     bool wasRemoved = queryQueue.removeIf(
-        [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
-            return pair.first == query && pair.second == data;
-        });
+            [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
+                return pair.first == query && pair.second == data;
+            });
     if (wasRemoved) {
         data->setStatus(QUERY_ABORTED);
         data->setFinished(true);
@@ -214,7 +233,7 @@ std::string Database::hostInfo() {
 size_t Database::queueSize() { return queryQueue.size(); }
 bool Database::wasDisconnected() { return disconnected; }
 
-void Database::setShouldAutoReconnect(bool autoReconnect) { shouldAutoReconnect = autoReconnect; }
+void Database::setAutoReconnect(bool autoReconnect) { shouldAutoReconnect = autoReconnect; }
 void Database::setMultiStatements(bool multiStatement) {
     if (multiStatement) {
         throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
@@ -274,7 +293,12 @@ void Database::connectRun() {
 bool Database::attemptConnection() {
     try {
         m_connection.reset(new pqxx::connection(buildConnectionString()));
-        m_hostInfo = host + ":" + std::to_string(port) + "/" + m_connection->dbname();
+        const char *connectedHost = m_connection->hostname();
+        const char *connectedPort = m_connection->port();
+        const char *connectedDatabase = m_connection->dbname();
+        m_hostInfo = connectedHost && *connectedHost ? connectedHost : "local";
+        if (connectedPort && *connectedPort) m_hostInfo += std::string(":") + connectedPort;
+        if (connectedDatabase && *connectedDatabase) m_hostInfo += std::string("/") + connectedDatabase;
         m_serverVersion = m_connection->server_version();
         return m_connection->is_open();
     } catch (const std::exception &error) {
@@ -307,24 +331,8 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         if (!m_connection || !m_connection->is_open()) {
             if (!shouldAutoReconnect || !attemptReconnect()) throw PGConnectionException(m_connectionError);
         }
-        {
-            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
-            m_activeQueryData = data;
-            m_activeConnection = m_connection.get();
-        }
-        try {
-            query->executeStatement(*this, *m_connection, data);
-        } catch (...) {
-            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
-            m_activeQueryData.reset();
-            m_activeConnection = nullptr;
-            throw;
-        }
-        {
-            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
-            m_activeQueryData.reset();
-            m_activeConnection = nullptr;
-        }
+        ActiveQueryGuard activeQuery(*this, data);
+        query->executeStatement(*this, *m_connection, data);
         data->setCancellationRequested(false);
         data->setResultStatus(QUERY_SUCCESS);
     } catch (const pqxx::broken_connection &error) {
@@ -408,14 +416,14 @@ void Database::run() {
 
 void Database::waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
     if (!m_canWait) {
-        failWaitingQuery(query, data, "Can not wait on query, database is not connected or connection failed.");
+        completeQueryWithError(query, data, "Can not wait on query, database is not connected or connection failed.");
         return;
     }
     if (data->isFinished()) return;
     data->waitUntilFinished();
 }
 
-void Database::failWaitingQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
+void Database::completeQueryWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
                                 const std::string &reason) {
     data->setError(reason);
     data->setResultStatus(QUERY_ERROR);

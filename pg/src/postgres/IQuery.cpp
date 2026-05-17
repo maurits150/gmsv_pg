@@ -10,10 +10,13 @@ IQuery::IQuery(std::shared_ptr<Database> database) : m_database(std::move(databa
 IQuery::~IQuery() = default;
 
 void IQuery::start(const std::shared_ptr<IQueryData> &queryData) {
+    validateStart(queryData);
     addQueryData(queryData);
     m_database->enqueueQuery(shared_from_this(), queryData);
     hasBeenStarted = true;
 }
+
+void IQuery::validateStart(const std::shared_ptr<IQueryData> &) {}
 
 bool IQuery::isRunning() {
     for (const auto &data : runningQueryData) {

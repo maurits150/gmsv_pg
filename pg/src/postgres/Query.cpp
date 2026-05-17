@@ -59,7 +59,7 @@ std::shared_ptr<Query> Query::create(const std::shared_ptr<Database> &database, 
 }
 
 bool QueryData::getNextResults() {
-    if (!hasMoreResults()) return false;
+    if (!hasAnyResults()) return false;
     m_results.pop_front();
     if (!m_affectedRows.empty()) m_affectedRows.pop_front();
     if (!m_oids.empty()) m_oids.pop_front();

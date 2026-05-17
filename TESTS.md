@@ -1006,6 +1006,22 @@ state.tests = {
 		end
 	},
 	{
+		name = "transaction object is one-shot",
+		run = function(done)
+			connectDatabase(function(db)
+				local tx = db:createTransaction()
+				tx:addQuery(db:query("SELECT 1::int4 AS value"))
+				function tx:onSuccess()
+					assertThrows("transaction second start", function() tx:start() end, "already started")
+					pass("transaction one-shot")
+					done()
+				end
+				function tx:onError(err) fail("transaction one-shot", err) end
+				tx:start()
+			end)
+		end
+	},
+	{
 		name = "abortAllQueries prevents queued inserts",
 		run = function(done)
 			local lockKey = 987654

@@ -17,9 +17,6 @@
 #undef LUA
 #endif
 
-
-#include <iostream>
-
 class LuaDatabase;
 
 using namespace GarrysMod::Lua;

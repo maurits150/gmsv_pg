@@ -8,7 +8,7 @@
 
 class LuaQuery : public LuaIQuery {
 public:
-    static int createDataReference(ILuaBase *LUA, Query &query, QueryData &data);
+    static int createResultTableReference(ILuaBase *LUA, Query &query, QueryData &data);
 
     static void addMetaTableFunctions(ILuaBase *LUA);
 

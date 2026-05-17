@@ -289,7 +289,7 @@ PG_LUA_FUNCTION(hostInfo) {
 PG_LUA_FUNCTION(setAutoReconnect) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     LUA->CheckType(2, GarrysMod::Lua::Type::Bool);
-    database->m_database->setShouldAutoReconnect(LUA->GetBool(2));
+    database->m_database->setAutoReconnect(LUA->GetBool(2));
     return 0;
 }
 

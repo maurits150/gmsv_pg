@@ -2,7 +2,6 @@
 #include <algorithm>
 #include "LuaObject.h"
 #include "LuaDatabase.h"
-#include <iostream>
 
 int LuaObject::TYPE_USERDATA = 0;
 int LuaObject::TYPE_DATABASE = 0;
@@ -17,7 +16,7 @@ LUA_FUNCTION(luaObjectGc) {
     const auto luaObject = LUA->GetUserType<LuaObject>(1, LuaObject::TYPE_USERDATA);
 
     if (luaObject == nullptr) {
-        // This should not happen
+        // Garry's Mod invoked __gc without our userdata; nothing is safe to destroy.
         return 0;
     }
 

@@ -45,7 +45,7 @@ class QueryData : public IQueryData {
 public:
     unsigned long long getLastInsertID() const { return 0; }
     unsigned long long getAffectedRows() const { return m_affectedRows.empty() ? 0 : m_affectedRows.front(); }
-    bool hasMoreResults() const { return !m_results.empty(); }
+    bool hasAnyResults() const { return !m_results.empty(); }
     bool getNextResults();
     ResultData &getResult() { return m_results.front(); }
     std::deque<ResultData> getResults() { return m_results; }

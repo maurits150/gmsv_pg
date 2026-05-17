@@ -18,15 +18,15 @@ public:
             if (closed) return false;
             backingQueue.push_back(std::move(elem));
         }
-        waitObj.notify_all();
+        waitObj.notify_one();
         return true;
     }
 
-    bool empty() {
+    bool empty() const {
         return size() == 0;
     }
 
-    bool swapToFrontIf(std::function<bool(T)> func) {
+    bool swapToFrontIf(const std::function<bool(const T &)> &func) {
         std::lock_guard<std::mutex> lock(mutex);
         auto pos = std::find_if(backingQueue.begin(), backingQueue.end(), func);
         if (pos != backingQueue.begin() && pos != backingQueue.end()) {
@@ -36,7 +36,7 @@ public:
         return false;
     }
 
-    bool removeIf(std::function<bool(T)> func) {
+    bool removeIf(const std::function<bool(const T &)> &func) {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = std::remove_if(backingQueue.begin(), backingQueue.end(), func);
         bool removed = it != backingQueue.end();
@@ -49,7 +49,7 @@ public:
         backingQueue.erase(std::remove(backingQueue.begin(), backingQueue.end(), elem), backingQueue.end());
     }
 
-    size_t size() {
+    size_t size() const {
         std::lock_guard<std::mutex> lock(mutex);
         return backingQueue.size();
     }
@@ -66,7 +66,6 @@ public:
     std::deque<T> clear() {
         std::lock_guard<std::mutex> lock(mutex);
         std::deque<T> returnQueue = std::move(backingQueue);
-        backingQueue.clear();
         return returnQueue;
     }
 
@@ -78,7 +77,7 @@ public:
         waitObj.notify_all();
     }
 
-    bool isClosed() {
+    bool isClosed() const {
         std::lock_guard<std::mutex> lock(mutex);
         return closed;
     }
@@ -86,7 +85,7 @@ public:
 private:
     std::deque<T> backingQueue{};
     bool closed = false;
-    std::mutex mutex{};
+    mutable std::mutex mutex{};
     std::condition_variable waitObj{};
 };
 

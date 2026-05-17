@@ -2,6 +2,16 @@
 
 #include "LuaQuery.h"
 
+static std::shared_ptr<Query> getBackendQuery(ILuaBase *LUA) {
+    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
+    auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
+    if (!query) {
+        LUA->ThrowError("[PG] Expected PG Query backend");
+        throw PGException("[PG] Expected PG Query backend");
+    }
+    return query;
+}
+
 //Function that converts PostgreSQL result data into a lua type.
 //Expects the row table to be at the top of the stack at the start of this function
 //Adds a column to the row table
@@ -37,12 +47,11 @@ static void dataToLua(Query &query,
     }
 }
 
-//Stores the data associated with the current result set of the query
-//Only called once per result set (and then cached)
-int LuaQuery::createDataReference(GarrysMod::Lua::ILuaBase *LUA, Query &query, QueryData &data) {
+// Builds a temporary Lua table reference for the current result set of the query.
+int LuaQuery::createResultTableReference(GarrysMod::Lua::ILuaBase *LUA, Query &query, QueryData &data) {
     LUA->CreateTable();
     int dataStackPosition = LUA->Top();
-    if (query.hasCallbackData() && data.hasMoreResults()) {
+    if (query.hasCallbackData() && data.hasAnyResults()) {
         ResultData &currentData = data.getResult();
         for (unsigned int i = 0; i < currentData.getRows().size(); i++) {
             ResultDataRow &row = currentData.getRows()[i];
@@ -99,7 +108,7 @@ static void runOnDataCallbacks(
 
 
 void LuaQuery::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Query>& query, const std::shared_ptr<QueryData> &data) {
-    int dataReference = LuaQuery::createDataReference(LUA, *query, *data);
+    int dataReference = LuaQuery::createResultTableReference(LUA, *query, *data);
     runOnDataCallbacks(LUA, query, data, dataReference);
 
     auto refs = LuaIQuery::getCallbackReferences(data);
@@ -115,41 +124,37 @@ void LuaQuery::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Query>& q
 }
 
 PG_LUA_FUNCTION(affectedRows) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = (Query *) luaQuery->m_query.get();
+    auto query = getBackendQuery(LUA);
     LUA->PushNumber((double) query->affectedRows());
     return 1;
 }
 
 PG_LUA_FUNCTION(commandStatus) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = (Query *) luaQuery->m_query.get();
+    auto query = getBackendQuery(LUA);
     auto status = query->commandStatus();
     LUA->PushString(status.c_str());
     return 1;
 }
 
 PG_LUA_FUNCTION(oid) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = (Query *) luaQuery->m_query.get();
+    auto query = getBackendQuery(LUA);
     LUA->PushNumber((double) query->oid());
     return 1;
 }
 
 PG_LUA_FUNCTION(lastInsert) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = (Query *) luaQuery->m_query.get();
+    auto query = getBackendQuery(LUA);
     LUA->PushNumber((double) query->lastInsert());
     return 1;
 }
 
 PG_LUA_FUNCTION(getData) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
-    if (!query->hasCallbackData() || query->callbackQueryData->getResultStatus() == QUERY_ERROR) {
+    auto query = getBackendQuery(LUA);
+    auto data = std::dynamic_pointer_cast<QueryData>(query->callbackQueryData);
+    if (!query->hasCallbackData() || !data || data->getResultStatus() == QUERY_ERROR) {
         LUA->PushNil();
     } else {
-        int ref = LuaQuery::createDataReference(LUA, *query, (QueryData &) *(query->callbackQueryData));
+        int ref = LuaQuery::createResultTableReference(LUA, *query, *data);
         LUA->ReferencePush(ref);
         LuaReferenceFree(LUA, ref);
     }
@@ -157,15 +162,13 @@ PG_LUA_FUNCTION(getData) {
 }
 
 PG_LUA_FUNCTION(hasMoreResults) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = (Query *) luaQuery->m_query.get();
+    auto query = getBackendQuery(LUA);
     LUA->PushBool(query->hasMoreResults());
     return 1;
 }
 
 PG_LUA_FUNCTION(getNextResults) {
-    auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
-    auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
+    auto query = getBackendQuery(LUA);
     query->getNextResults();
     return 0;
 }
