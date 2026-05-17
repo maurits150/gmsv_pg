@@ -14,8 +14,12 @@
 
 #include <pqxx/pqxx>
 
-#include "../BlockingQueue.h"
+#include "ActiveQueryState.h"
+#include "ConnectionConfig.h"
+#include "ConnectionSession.h"
 #include "IQuery.h"
+#include "QueryWorker.h"
+#include "ReconnectLog.h"
 
 class PreparedQuery;
 class Query;
@@ -26,22 +30,6 @@ enum DatabaseStatus {
     DATABASE_CONNECTING = 1,
     DATABASE_NOT_CONNECTED = 2,
     DATABASE_CONNECTION_FAILED = 3
-};
-
-enum SSLMode {
-    SSL_MODE_DISABLED = 0,
-    SSL_MODE_PREFERRED = 1,
-    SSL_MODE_REQUIRED = 2,
-    SSL_MODE_VERIFY_CA = 3,
-    SSL_MODE_VERIFY_IDENTITY = 4,
-};
-
-struct SSLSettings {
-    std::string key;
-    std::string cert;
-    std::string ca;
-    std::string capath;
-    std::string cipher;
 };
 
 class Database : public std::enable_shared_from_this<Database> {
@@ -74,7 +62,7 @@ public:
 
     QueryAbortResult abortAllQueries();
     std::deque<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> takeFinishedQueries() {
-        return finishedQueries.clear();
+        return m_worker.takeFinished();
     }
 
     DatabaseStatus status() const;
@@ -85,7 +73,7 @@ public:
     bool wasDisconnected();
     bool isConnectionDone() { return m_connectionDone; }
     bool connectionSuccessful() { return m_success; }
-    std::string connectionError() { return m_connectionError; }
+    std::string connectionError() { return m_session.error(); }
     bool attemptReconnect();
     std::deque<std::pair<bool, std::string>> takeReconnectEvents();
 
@@ -98,8 +86,6 @@ public:
     void waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
 
 private:
-    class ActiveQueryGuard;
-
     Database(std::string host, std::string username, std::string password, std::string database,
              unsigned int port, std::string unixSocket);
     explicit Database(std::string connectionString);
@@ -109,31 +95,19 @@ private:
     void connectRun();
     void run();
     void runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
-    void completeQueuedQueriesWithError(const std::string &reason);
     void completeQueryWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
                           const std::string &reason);
     bool attemptConnection();
-    std::string buildConnectionString() const;
-    static std::string quoteConninfoValue(const std::string &value);
 
-    BlockingQueue<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> finishedQueries;
-    BlockingQueue<std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>>> queryQueue;
-    std::unique_ptr<pqxx::connection> m_connection;
+    QueryWorker m_worker;
+    ConnectionConfig m_config;
+    ConnectionSession m_session;
+    ReconnectLog m_reconnectLog;
+    ActiveQueryState m_activeQuery;
     std::thread m_thread;
     std::mutex m_connectMutex;
     std::mutex m_queryMutex;
-    std::mutex m_activeQueryMutex;
-    std::mutex m_reconnectEventMutex;
     std::condition_variable m_connectWakeupVariable;
-
-    std::string m_connectionError;
-    std::deque<std::pair<bool, std::string>> m_reconnectEvents;
-    // Published only while the worker thread is inside PostgreSQL execution.
-    std::shared_ptr<IQueryData> m_activeQueryData;
-    pqxx::connection *m_activeConnection = nullptr;
-    std::string m_serverInfo = "PostgreSQL";
-    std::string m_hostInfo;
-    unsigned int m_serverVersion = 0;
 
     std::atomic<bool> shouldAutoReconnect{true};
     bool startedConnecting = false;
@@ -144,19 +118,6 @@ private:
     std::atomic<bool> m_connectionDone{false};
     std::atomic<DatabaseStatus> m_status{DATABASE_NOT_CONNECTED};
 
-    std::string database;
-    std::string host;
-    std::string username;
-    std::string password;
-    std::string unixSocket;
-    unsigned int port;
-    bool useRawConnectionString = false;
-    std::string rawConnectionString;
-    std::vector<std::pair<std::string, std::string>> optionTable;
-    bool hasSSLMode = false;
-    SSLMode sslMode = SSL_MODE_PREFERRED;
-    SSLSettings sslSettings;
-    unsigned int connectTimeout = 0;
 };
 
 #endif

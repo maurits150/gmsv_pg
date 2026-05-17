@@ -1,8 +1,6 @@
 // PostgreSQL backend for gmsv_pg; integrates with the MySQLOO-derived Lua runtime.
 #include "Database.h"
 
-#include <sstream>
-
 #include "PreparedQuery.h"
 #include "Query.h"
 #include "Transaction.h"
@@ -23,33 +21,14 @@ std::shared_ptr<Database> Database::createDatabaseFromOptions(const std::vector<
 
 Database::Database(std::string host, std::string username, std::string password, std::string database,
                    unsigned int port, std::string unixSocket)
-    : database(std::move(database)), host(std::move(host)), username(std::move(username)),
-      password(std::move(password)), unixSocket(std::move(unixSocket)), port(port) {}
+    : m_config(ConnectionConfig::positional(std::move(host), std::move(username), std::move(password),
+                                            std::move(database), port, std::move(unixSocket))) {}
 
 Database::Database(std::string connectionString)
-    : port(0), useRawConnectionString(true), rawConnectionString(std::move(connectionString)) {}
+    : m_config(ConnectionConfig::rawConnectionString(std::move(connectionString))) {}
 
 Database::Database(std::vector<std::pair<std::string, std::string>> options)
-    : port(0), optionTable(std::move(options)) {}
-
-class Database::ActiveQueryGuard {
-public:
-    ActiveQueryGuard(Database &database, std::shared_ptr<IQueryData> data)
-            : database(database) {
-        std::lock_guard<std::mutex> lock(database.m_activeQueryMutex);
-        database.m_activeQueryData = std::move(data);
-        database.m_activeConnection = database.m_connection.get();
-    }
-
-    ~ActiveQueryGuard() {
-        std::lock_guard<std::mutex> lock(database.m_activeQueryMutex);
-        database.m_activeQueryData.reset();
-        database.m_activeConnection = nullptr;
-    }
-
-private:
-    Database &database;
-};
+    : m_config(ConnectionConfig::options(std::move(options))) {}
 
 Database::~Database() {
     shutdown();
@@ -62,26 +41,16 @@ void Database::enqueueQuery(const std::shared_ptr<IQuery> &query, const std::sha
         data->setFinished(true);
         throw PGException("Database is disconnected.");
     }
-    data->setStatus(QUERY_WAITING);
-    if (!queryQueue.put(std::make_pair(query, data))) {
-        data->setStatus(QUERY_ABORTED);
-        data->setFinished(true);
-        throw PGException("Database is disconnected.");
-    }
+    m_worker.enqueue(query, data);
 }
 
 bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
-    return queryQueue.swapToFrontIf([&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
-        return pair.first == query && pair.second == data;
-    });
+    return m_worker.swapToFront(query, data);
 }
 
 QueryAbortResult Database::abortQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
     QueryAbortResult result;
-    bool wasRemoved = queryQueue.removeIf(
-            [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
-                return pair.first == query && pair.second == data;
-            });
+    bool wasRemoved = m_worker.removeQueued(query, data);
     if (wasRemoved) {
         data->setStatus(QUERY_ABORTED);
         data->setFinished(true);
@@ -106,16 +75,7 @@ QueryAbortResult Database::abortQuery(const std::shared_ptr<IQuery> &query, cons
 }
 
 bool Database::cancelRunningQuery(const std::shared_ptr<IQueryData> &data) {
-    std::lock_guard<std::mutex> lock(m_activeQueryMutex);
-    if (m_activeQueryData != data || m_activeConnection == nullptr) return false;
-    try {
-        data->setCancellationRequested(true);
-        m_activeConnection->cancel_query();
-        return true;
-    } catch (const std::exception &) {
-        data->setCancellationRequested(false);
-        return false;
-    }
+    return m_activeQuery.cancel(data);
 }
 
 std::shared_ptr<Query> Database::query(const std::string &query) { return Query::create(shared_from_this(), query); }
@@ -145,63 +105,32 @@ void Database::shutdown() {
     bool wasAlreadyShuttingDown = m_shuttingDown.exchange(true);
     if (wasAlreadyShuttingDown) return;
 
-    std::shared_ptr<IQueryData> activeData;
-    {
-        std::lock_guard<std::mutex> lock(m_activeQueryMutex);
-        activeData = m_activeQueryData;
-    }
+    std::shared_ptr<IQueryData> activeData = m_activeQuery.currentData();
     if (activeData) cancelRunningQuery(activeData);
 
-    auto queuedQueries = queryQueue.clear();
-    for (auto &pair : queuedQueries) {
-        if (!pair.second) continue;
-        pair.second->setStatus(QUERY_ABORTED);
-        pair.second->setFinished(true);
-    }
-    queryQueue.close();
+    m_worker.abortQueued();
+    m_worker.close();
 }
 
 bool Database::ping() {
     std::lock_guard<std::mutex> lock(m_queryMutex);
-    if (!m_connection || !m_connection->is_open()) return false;
-    pqxx::work tx(*m_connection);
-    tx.exec("SELECT 1");
-    tx.commit();
-    return true;
+    return m_session.ping();
 }
 
 std::string Database::escape(const std::string &str) {
     std::lock_guard<std::mutex> lock(m_queryMutex);
-    if (!m_connection || !m_connection->is_open()) throw PGException("Cannot escape using database that is not connected");
-    return m_connection->esc(str);
+    return m_session.escape(str);
 }
 
 bool Database::setCharacterSet(const std::string &characterSet) {
     std::lock_guard<std::mutex> lock(m_queryMutex);
-    if (!m_connection || !m_connection->is_open()) throw PGException("Database needs to be connected to change charset.");
-    pqxx::work tx(*m_connection);
-    tx.exec("SET CLIENT_ENCODING TO " + tx.quote(characterSet));
-    tx.commit();
-    return true;
+    return m_session.setCharacterSet(characterSet);
 }
 
 QueryAbortResult Database::abortAllQueries() {
-    QueryAbortResult result;
-    auto canceled = queryQueue.clear();
-    for (auto &pair : canceled) {
-        if (!pair.second) continue;
-        pair.second->setStatus(QUERY_ABORTED);
-        pair.second->setFinished(true);
-        result.completed.push_back(pair);
-        result.requested = true;
-        result.requestedCount++;
-    }
+    QueryAbortResult result = m_worker.abortQueued();
 
-    std::shared_ptr<IQueryData> activeData;
-    {
-        std::lock_guard<std::mutex> lock(m_activeQueryMutex);
-        activeData = m_activeQueryData;
-    }
+    std::shared_ptr<IQueryData> activeData = m_activeQuery.currentData();
     if (activeData && cancelRunningQuery(activeData)) {
         result.requested = true;
         result.requestedCount++;
@@ -214,34 +143,31 @@ unsigned int Database::serverVersion() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get server version when client is not connected to server yet!");
     }
-    return m_serverVersion;
+    return m_session.serverVersion();
 }
 
 std::string Database::serverInfo() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get server info when client is not connected to server yet!");
     }
-    return m_serverInfo;
+    return m_session.serverInfo();
 }
 
 std::string Database::hostInfo() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get host info when client is not connected to server yet!");
     }
-    return m_hostInfo;
+    return m_session.hostInfo();
 }
-size_t Database::queueSize() { return queryQueue.size(); }
+size_t Database::queueSize() { return m_worker.queueSize(); }
 bool Database::wasDisconnected() { return disconnected; }
 
 void Database::setAutoReconnect(bool autoReconnect) { shouldAutoReconnect = autoReconnect; }
-void Database::setConnectTimeout(unsigned int timeout) { connectTimeout = timeout; }
-void Database::setSSLMode(SSLMode mode) { hasSSLMode = true; sslMode = mode; }
+void Database::setConnectTimeout(unsigned int timeout) { m_config.setConnectTimeout(timeout); }
+void Database::setSSLMode(SSLMode mode) { m_config.setSSLMode(mode); }
 
 void Database::setSSLSettings(const SSLSettings &settings) {
-    if (!settings.capath.empty() || !settings.cipher.empty()) {
-        throw PGException("pg: capath and cipher SSL settings do not have exact libpq equivalents");
-    }
-    sslSettings = settings;
+    m_config.setSSLSettings(settings);
 }
 
 void Database::connectRun() {
@@ -254,12 +180,11 @@ void Database::connectRun() {
             m_connectWakeupVariable.notify_one();
             disconnected = true;
             m_canWait = false;
-            completeQueuedQueriesWithError(m_connectionError.empty() ? "Connection to database failed" : m_connectionError);
-            queryQueue.close();
+            m_worker.completeQueuedWithError(m_session.error().empty() ? "Connection to database failed" : m_session.error());
+            m_worker.close();
             return;
         }
         m_success = true;
-        m_connectionError = "";
         m_connectionDone = true;
         m_status = DATABASE_CONNECTED;
         m_connectWakeupVariable.notify_one();
@@ -267,7 +192,7 @@ void Database::connectRun() {
     run();
     {
         std::lock_guard<std::mutex> lock(m_queryMutex);
-        m_connection.reset();
+        m_session.reset();
     }
     m_canWait = false;
     disconnected = true;
@@ -275,48 +200,28 @@ void Database::connectRun() {
 }
 
 bool Database::attemptConnection() {
-    try {
-        m_connection.reset(new pqxx::connection(buildConnectionString()));
-        const char *connectedHost = m_connection->hostname();
-        const char *connectedPort = m_connection->port();
-        const char *connectedDatabase = m_connection->dbname();
-        m_hostInfo = connectedHost && *connectedHost ? connectedHost : "local";
-        if (connectedPort && *connectedPort) m_hostInfo += std::string(":") + connectedPort;
-        if (connectedDatabase && *connectedDatabase) m_hostInfo += std::string("/") + connectedDatabase;
-        m_serverVersion = m_connection->server_version();
-        return m_connection->is_open();
-    } catch (const std::exception &error) {
-        m_connectionError = error.what();
-        m_connection.reset();
-        return false;
-    }
+    return m_session.connect(m_config);
 }
 
 bool Database::attemptReconnect() {
     if (m_shuttingDown) return false;
-    m_connection.reset();
+    m_session.reset();
     bool success = attemptConnection();
-    {
-        std::lock_guard<std::mutex> lock(m_reconnectEventMutex);
-        m_reconnectEvents.emplace_back(success, success ? "" : m_connectionError);
-    }
+    m_reconnectLog.add(success, m_session.error());
     return success;
 }
 
 std::deque<std::pair<bool, std::string>> Database::takeReconnectEvents() {
-    std::lock_guard<std::mutex> lock(m_reconnectEventMutex);
-    auto events = m_reconnectEvents;
-    m_reconnectEvents.clear();
-    return events;
+    return m_reconnectLog.take();
 }
 
 void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
     try {
-        if (!m_connection || !m_connection->is_open()) {
-            if (!shouldAutoReconnect || !attemptReconnect()) throw PGConnectionException(m_connectionError);
+        if (!m_session.isOpen()) {
+            if (!shouldAutoReconnect || !attemptReconnect()) throw PGConnectionException(m_session.error());
         }
-        ActiveQueryGuard activeQuery(*this, data);
-        query->executeStatement(*this, *m_connection, data);
+        ActiveQueryState::Guard activeQuery(m_activeQuery, data, m_session.connectionPtr());
+        query->executeStatement(*this, m_session.connection(), data);
         data->setCancellationRequested(false);
         data->setResultStatus(QUERY_SUCCESS);
     } catch (const pqxx::broken_connection &error) {
@@ -358,32 +263,20 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
     }
 }
 
-void Database::completeQueuedQueriesWithError(const std::string &reason) {
-    auto queuedQueries = queryQueue.clear();
-    for (auto &pair : queuedQueries) {
-        if (!pair.second) continue;
-        pair.second->setError(reason);
-        pair.second->setResultStatus(QUERY_ERROR);
-        pair.second->setStatus(QUERY_COMPLETE);
-        finishedQueries.put(pair);
-        pair.second->setFinished(true);
-    }
-}
-
 void Database::run() {
     while (true) {
         std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> pair;
-        if (!queryQueue.take(pair)) return;
+        if (!m_worker.takeNext(pair)) return;
         auto data = pair.second;
         if (data->getStatus() == QUERY_ABORTED) {
-            finishedQueries.put(pair);
+            m_worker.finish(pair);
             data->setFinished(true);
             continue;
         }
         {
             std::unique_lock<std::mutex> lock(m_queryMutex);
             if (data->getStatus() == QUERY_ABORTED) {
-                finishedQueries.put(pair);
+                m_worker.finish(pair);
                 data->setFinished(true);
                 continue;
             }
@@ -393,7 +286,7 @@ void Database::run() {
                 data->setStatus(QUERY_COMPLETE);
             }
         }
-        finishedQueries.put(pair);
+        m_worker.finish(pair);
         data->setFinished(true);
     }
 }
@@ -413,53 +306,10 @@ void Database::completeQueryWithError(const std::shared_ptr<IQuery> &query, cons
     data->setResultStatus(QUERY_ERROR);
     data->setStatus(QUERY_COMPLETE);
     data->setFinished(true);
-    finishedQueries.put(std::make_pair(query, data));
+    m_worker.finish(std::make_pair(query, data));
 }
 
 bool Database::isRetriableError(const PGConnectionException &error) {
     return (error.sqlstate.size() >= 2 && error.sqlstate.substr(0, 2) == "08" && error.sqlstate != "08007") ||
            error.sqlstate.empty();
-}
-
-std::string Database::quoteConninfoValue(const std::string &value) {
-    std::string out = "'";
-    for (char ch : value) {
-        if (ch == '\\' || ch == '\'') out.push_back('\\');
-        out.push_back(ch);
-    }
-    out.push_back('\'');
-    return out;
-}
-
-std::string Database::buildConnectionString() const {
-    if (useRawConnectionString) {
-        return rawConnectionString;
-    }
-
-    std::ostringstream ss;
-    auto add = [&](const std::string &key, const std::string &value) {
-        if (!value.empty()) ss << key << "=" << quoteConninfoValue(value) << " ";
-    };
-    add("host", unixSocket.empty() ? host : unixSocket);
-    add("user", username);
-    add("password", password);
-    add("dbname", database);
-    if (port != 0) ss << "port=" << port << " ";
-    if (connectTimeout > 0) ss << "connect_timeout=" << connectTimeout << " ";
-    if (hasSSLMode) {
-        switch (sslMode) {
-            case SSL_MODE_DISABLED: ss << "sslmode=disable "; break;
-            case SSL_MODE_PREFERRED: ss << "sslmode=prefer "; break;
-            case SSL_MODE_REQUIRED: ss << "sslmode=require "; break;
-            case SSL_MODE_VERIFY_CA: ss << "sslmode=verify-ca "; break;
-            case SSL_MODE_VERIFY_IDENTITY: ss << "sslmode=verify-full "; break;
-        }
-    }
-    add("sslkey", sslSettings.key);
-    add("sslcert", sslSettings.cert);
-    add("sslrootcert", sslSettings.ca);
-    for (const auto &option : optionTable) {
-        add(option.first, option.second);
-    }
-    return ss.str();
 }
