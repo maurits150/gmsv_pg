@@ -57,6 +57,19 @@ bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std:
     });
 }
 
+bool Database::cancelRunningQuery(const std::shared_ptr<IQueryData> &data) {
+    std::lock_guard<std::mutex> lock(m_activeQueryMutex);
+    if (m_activeQueryData != data || m_activeConnection == nullptr) return false;
+    try {
+        data->setStatus(QUERY_ABORTED);
+        m_activeConnection->cancel_query();
+        return true;
+    } catch (const std::exception &) {
+        data->setStatus(QUERY_RUNNING);
+        return false;
+    }
+}
+
 std::shared_ptr<Query> Database::query(const std::string &query) { return Query::create(shared_from_this(), query); }
 std::shared_ptr<PreparedQuery> Database::prepare(const std::string &query) { return PreparedQuery::create(shared_from_this(), query); }
 std::shared_ptr<Transaction> Database::transaction() { return Transaction::create(shared_from_this()); }
@@ -243,22 +256,59 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         if (!m_connection || !m_connection->is_open()) {
             if (!shouldAutoReconnect || !attemptReconnect()) throw PGConnectionException(m_connectionError);
         }
-        query->executeStatement(*this, *m_connection, data);
+        {
+            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
+            m_activeQueryData = data;
+            m_activeConnection = m_connection.get();
+        }
+        try {
+            query->executeStatement(*this, *m_connection, data);
+        } catch (...) {
+            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
+            m_activeQueryData.reset();
+            m_activeConnection = nullptr;
+            throw;
+        }
+        {
+            std::lock_guard<std::mutex> activeLock(m_activeQueryMutex);
+            m_activeQueryData.reset();
+            m_activeConnection = nullptr;
+        }
+        if (data->getStatus() == QUERY_ABORTED) {
+            data->setResultStatus(QUERY_NONE);
+            return;
+        }
         data->setResultStatus(QUERY_SUCCESS);
     } catch (const pqxx::broken_connection &error) {
+        if (data->getStatus() == QUERY_ABORTED) {
+            data->setResultStatus(QUERY_NONE);
+            return;
+        }
         if (shouldAutoReconnect) attemptReconnect();
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const pqxx::sql_error &error) {
+        if (data->getStatus() == QUERY_ABORTED) {
+            data->setResultStatus(QUERY_NONE);
+            return;
+        }
         PGConnectionException pgError(error.what(), error.sqlstate());
         if (shouldAutoReconnect && isRetriableError(pgError)) attemptReconnect();
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const PGConnectionException &error) {
+        if (data->getStatus() == QUERY_ABORTED) {
+            data->setResultStatus(QUERY_NONE);
+            return;
+        }
         if (shouldAutoReconnect && isRetriableError(error)) attemptReconnect();
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     } catch (const std::exception &error) {
+        if (data->getStatus() == QUERY_ABORTED) {
+            data->setResultStatus(QUERY_NONE);
+            return;
+        }
         data->setResultStatus(QUERY_ERROR);
         data->setError(error.what());
     }
@@ -270,18 +320,22 @@ void Database::run() {
         if (!queryQueue.take(pair)) return;
         auto data = pair.second;
         if (data->getStatus() == QUERY_ABORTED) {
+            finishedQueries.put(pair);
             data->setFinished(true);
             continue;
         }
         {
             std::unique_lock<std::mutex> lock(m_queryMutex);
             if (data->getStatus() == QUERY_ABORTED) {
+                finishedQueries.put(pair);
                 data->setFinished(true);
                 continue;
             }
             data->setStatus(QUERY_RUNNING);
             runQuery(pair.first, data);
-            data->setStatus(QUERY_COMPLETE);
+            if (data->getStatus() != QUERY_ABORTED) {
+                data->setStatus(QUERY_COMPLETE);
+            }
         }
         finishedQueries.put(pair);
         data->setFinished(true);

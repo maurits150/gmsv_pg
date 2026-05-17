@@ -52,25 +52,30 @@ std::string IQuery::error() const {
     return callbackQueryData ? callbackQueryData->getError() : "";
 }
 
-std::vector<std::shared_ptr<IQueryData>> IQuery::abort() {
-    std::vector<std::shared_ptr<IQueryData>> aborted;
+QueryAbortResult IQuery::abort() {
+    QueryAbortResult result;
     auto database = m_database;
-    if (!database) return aborted;
+    if (!database) return result;
 
     auto runningQueries = runningQueryData;
-    std::lock_guard<std::mutex> lock(database->m_queryMutex);
     for (auto &data : runningQueries) {
         bool wasRemoved = database->queryQueue.removeIf(
             [&](const std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> &pair) {
                 return pair.second == data;
             });
-        if (wasRemoved || data->getStatus() == QUERY_WAITING) {
+        if (wasRemoved) {
             data->setStatus(QUERY_ABORTED);
             data->setFinished(true);
-            aborted.push_back(data);
+            result.completed.push_back(data);
+            result.requested = true;
+        } else if (data->getStatus() == QUERY_WAITING) {
+            data->setStatus(QUERY_ABORTED);
+            result.requested = true;
+        } else if (data->getStatus() == QUERY_RUNNING && database->cancelRunningQuery(data)) {
+            result.requested = true;
         }
     }
-    return aborted;
+    return result;
 }
 
 void IQuery::wait(bool shouldSwap) {

@@ -40,6 +40,13 @@ enum QueryOption {
 
 class IQueryData;
 
+struct QueryAbortResult {
+    // True when abort either completed queued work immediately or requested cancellation of running work.
+    bool requested = false;
+    // Query data whose callbacks can be completed synchronously by the caller.
+    std::vector<std::shared_ptr<IQueryData>> completed;
+};
+
 class IQuery : public std::enable_shared_from_this<IQuery> {
     friend class Database;
     friend class Transaction;
@@ -55,7 +62,7 @@ public:
     void addQueryData(const std::shared_ptr<IQueryData> &data);
     void finishQueryData(const std::shared_ptr<IQueryData> &data);
     std::string error() const;
-    std::vector<std::shared_ptr<IQueryData>> abort();
+    QueryAbortResult abort();
     void wait(bool shouldSwap);
     bool hasCallbackData() const { return callbackQueryData != nullptr; }
     QueryResultStatus getResultStatus() const;

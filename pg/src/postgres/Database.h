@@ -57,6 +57,8 @@ public:
 
     void enqueueQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     bool swapQueryToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
+    // Requests PostgreSQL cancellation for the query data currently executing on the worker connection.
+    bool cancelRunningQuery(const std::shared_ptr<IQueryData> &data);
 
     std::shared_ptr<Query> query(const std::string &query);
     std::shared_ptr<PreparedQuery> prepare(const std::string &query);
@@ -122,11 +124,15 @@ private:
     std::thread m_thread;
     std::mutex m_connectMutex;
     std::mutex m_queryMutex;
+    std::mutex m_activeQueryMutex;
     std::mutex m_reconnectEventMutex;
     std::condition_variable m_connectWakeupVariable;
 
     std::string m_connectionError;
     std::deque<std::pair<bool, std::string>> m_reconnectEvents;
+    // Published only while the worker thread is inside PostgreSQL execution.
+    std::shared_ptr<IQueryData> m_activeQueryData;
+    pqxx::connection *m_activeConnection = nullptr;
     std::string m_serverInfo = "PostgreSQL";
     std::string m_hostInfo;
     unsigned int m_serverVersion = 0;

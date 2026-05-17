@@ -62,8 +62,8 @@ PG_LUA_FUNCTION(isRunning) {
 
 PG_LUA_FUNCTION(abort) {
     auto query = LuaIQuery::getLuaObject<LuaIQuery>(LUA);
-    auto abortedData = query->m_query->abort();
-    for (auto &data: abortedData) {
+    auto abortResult = query->m_query->abort();
+    for (auto &data: abortResult.completed) {
         if (auto transaction = std::dynamic_pointer_cast<Transaction>(query->m_query)) {
             LuaTransaction::runAbortedCallback(LUA, transaction, std::dynamic_pointer_cast<TransactionData>(data));
         } else {
@@ -71,7 +71,7 @@ PG_LUA_FUNCTION(abort) {
         }
         LuaIQuery::finishLuaQueryData(LUA, query->m_query, data);
     }
-    LUA->PushBool(!abortedData.empty());
+    LUA->PushBool(abortResult.requested);
     return 1;
 }
 
@@ -175,7 +175,13 @@ LuaIQuery::runCallback(ILuaBase *LUA, const std::shared_ptr<IQuery> &iQuery, con
     iQuery->setCallbackData(data);
 
     auto status = data->getResultStatus();
-    switch (status) {
+    if (data->getStatus() == QUERY_ABORTED) {
+        if (auto transaction = std::dynamic_pointer_cast<Transaction>(iQuery)) {
+            LuaTransaction::runAbortedCallback(LUA, transaction, std::dynamic_pointer_cast<TransactionData>(data));
+        } else {
+            LuaIQuery::runAbortedCallback(LUA, data);
+        }
+    } else switch (status) {
         case QUERY_NONE:
             break; //Should not happen
         case QUERY_ERROR:

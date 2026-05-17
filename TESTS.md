@@ -1003,6 +1003,31 @@ state.tests = {
 		end
 	},
 	{
+		name = "running query abort cancels PostgreSQL work",
+		run = function(done)
+			connectDatabase(function(db)
+				local startedAt = SysTime()
+				local query = db:query("SELECT pg_sleep(5)")
+				function query:onSuccess()
+					fail("running abort", "unexpected success")
+				end
+				function query:onError(err)
+					fail("running abort", "unexpected error", err)
+				end
+				function query:onAborted()
+					local elapsed = SysTime() - startedAt
+					if not assertTruthy("running abort elapsed", elapsed < 2.0) then return end
+					pass("running query abort", elapsed)
+					done()
+				end
+				query:start()
+				timer.Simple(0.2, function()
+					if not assertEqual("running abort returned", query:abort(), true) then return end
+				end)
+			end)
+		end
+	},
+	{
 		name = "disconnect callback",
 		run = function(done)
 			local db = pg.connect("127.0.0.1", "postgres", "postgres", "gmsv_pg_test", 55432)
@@ -2063,6 +2088,7 @@ The executable suite above covers:
 - Transaction rollback on child query error.
 - Waiting-query abort behavior.
 - `abortAllQueries` behavior.
+- Running query cancellation through `query:abort()`.
 - `lastInsert()` throwing with `RETURNING` guidance.
 - `setMultiStatements(true)` throwing until multi-result chains are implemented.
 - `setReadTimeout` / `setWriteTimeout` throwing honestly.
