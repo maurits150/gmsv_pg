@@ -21,12 +21,14 @@ project "pg"
   location "./project"
   targetdir "./bin"
   libdirs { 'lib/'..os.target() }
-  includedirs { 'include' }
+  includedirs { 'include', '../vendor/gmod-lua' }
 
   files {
-    "src/**.cpp",
-    "src/**.h",
-    "src/**.hpp"
+    "src/lua/**.cpp",
+    "src/lua/**.h",
+    "src/postgres/**.cpp",
+    "src/postgres/**.h",
+    "src/BlockingQueue.h"
   }
 
   include "../premake5.lua"
@@ -35,5 +37,5 @@ project "pg"
     links { 'ws2_32', 'libeay32', 'libpqxx_static', 'libpq' }
   else
     pic "On"
-    links { 'pthread', 'pq', 'pqxx' }
+    links { 'pthread', 'pqxx', 'pq' }
   end

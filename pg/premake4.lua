@@ -34,6 +34,7 @@ project "pg"
   libdirs { "lib/"..target_os }
   includedirs {
     "include",
+    "../vendor/gmod-lua",
     "../include",
     "../vendor/gmod-module-base/include",
     "../vendor/variant/include/mpark"
@@ -44,13 +45,15 @@ project "pg"
   end
 
   files {
-    "src/**.cpp",
-    "src/**.h",
-    "src/**.hpp"
+    "src/lua/**.cpp",
+    "src/lua/**.h",
+    "src/postgres/**.cpp",
+    "src/postgres/**.h",
+    "src/BlockingQueue.h"
   }
 
   if target_os == "windows" then
     links { "ws2_32", "libeay32", "libpqxx_static", "libpq" }
   else
-    links { "pthread", "pq", "pqxx" }
+    links { "pthread", "pqxx", "pq" }
   end

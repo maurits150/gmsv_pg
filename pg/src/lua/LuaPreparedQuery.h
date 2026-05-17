@@ -1,0 +1,23 @@
+// Derived from MySQLOO runtime code (LGPL-2.1); adapted for PostgreSQL gmsv_pg.
+
+#ifndef PG_LUAPREPAREDQUERY_H
+#define PG_LUAPREPAREDQUERY_H
+
+
+#include "LuaQuery.h"
+#include "../postgres/PreparedQuery.h"
+
+class LuaPreparedQuery : public LuaQuery {
+public:
+    std::shared_ptr<IQueryData> buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) override;
+
+    static void createMetaTable(ILuaBase *LUA);
+
+    explicit LuaPreparedQuery(const std::shared_ptr<PreparedQuery> &query, int databaseRef) : LuaQuery(
+            std::dynamic_pointer_cast<Query>(query), "PG Prepared Query", databaseRef) {
+
+    }
+};
+
+
+#endif //PG_LUAPREPAREDQUERY_H

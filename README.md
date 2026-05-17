@@ -28,143 +28,99 @@ sudo apt-get install build-essential g++-multilib libc6-dev-i386 linux-libc-dev:
 
 Please note that even if you do the "lazy way" it might still be necessary to `apt-get` the `libpq-dev:i386` package. If you run into issues, please make sure that it's the first step that you take before complaining.
 
+The bundled `runtime_depends/linux/libpq.so.5` must match the SSL/runtime libraries available on the host. If the module fails to load with an error like `libssl.so.1.1: cannot open shared object file`, refresh the bundled runtime dependency from the installed 32-bit libpq package:
+
+```sh
+cp /lib/i386-linux-gnu/libpq.so.5 runtime_depends/linux/libpq.so.5
+```
+
+Fully static libpq linking is not currently used because Debian's `libpq.a` depends on PostgreSQL internal support archives that are not shipped with the normal `libpq-dev:i386` package.
+
+## Building
+
+Linux builds target Garry's Mod's 32-bit server module ABI, so install 32-bit build dependencies first:
+
+```sh
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install premake4 build-essential g++-multilib libc6-dev-i386 linux-libc-dev:i386 libpq-dev:i386
+```
+
+Generate makefiles and build:
+
+```sh
+cd pg
+premake4 gmake
+cd project
+make
+```
+
+The built module is written to:
+
+```text
+pg/bin/gmsv_pg_linux.dll
+```
+
+For local testing or deployment, copy or symlink that file into your server's `garrysmod/lua/bin/` folder and copy `runtime_depends/linux/libpq.so.5` into the server root/bin location described above.
+
 ## Usage
 This module doesn't have all of the features implemented yet, it's being worked on.
 
-**Most of the functions are able to throw Lua errors in case of bad input. Be careful!**
+The module now uses a PostgreSQL-first MySQLOO-shaped API. The runtime/callback layer is derived from MySQLOO and is covered by LGPL-2.1; see `LICENSE_MYSQLOO_LGPL.md`.
 
-Here's a list of everything that is present:
+### Current API shape
 
 ```lua
--- Returns a new DatabaseConnection object for PostgreSQL.
-function pg.new_connection()
+require("pg")
 
--- Various version strings
-pg.version
-pg.version_major
-pg.version_minor
-pg.version_patch
-pg.version_suffix
+local db = pg.connect("127.0.0.1", "postgres", "password", "database", 5432)
 
--- DatabaseConnection class
+-- Native PostgreSQL connection strings are supported.
+local dbFromDsn = pg.connect("host=127.0.0.1 port=5432 dbname=database user=postgres password=password")
 
--- Connect to the specified database.
-function DatabaseConnection:connect(host, user, password, db, port, extra_string_to_append)
+-- Native libpq option tables are supported.
+local dbFromOptions = pg.connect({
+	host = "127.0.0.1",
+	port = 5432,
+	dbname = "database",
+	user = "postgres",
+	password = "password",
+	application_name = "gmsv_pg"
+})
 
--- Disconnect from current database.
-function DatabaseConnection:disconnect()
+function db:onConnected()
+	local query = db:query("SELECT 1 AS value")
 
--- Create a SQL query
---
--- query_string: SQL to execute
---
--- Returns a DatabaseQuery object
-function DatabaseConnection:query(query_string)
+	function query:onSuccess(data)
+		print(data[1].value)
+	end
 
--- Create a prepared query
---
--- name: ID of the prepared statement
---
--- Returns a PreparedQuery object
-function DatabaseConnection:query_prepared(name)
+	function query:onError(err, sql)
+		print(err, sql)
+	end
 
--- Escape dangerous characters in a string.
---
--- Returns an escaped string
-function DatabaseConnection:escape(str)
+	query:start()
+end
 
--- Return the escaped string back to normal
---
--- Returns a normal string
-function DatabaseConnection:unescape(escaped_str)
+function db:onConnectionFailed(err)
+	print(err)
+end
 
--- Quote a string
---
--- Returns a quoted string
-function DatabaseConnection:quote(str)
-
--- Quote a column name
---
--- Returns a quoted string
-function DatabaseConnection:quote_name(str)
-
--- Cancel the current query, if any.
-function DatabaseConnection:cancel()
-
--- Get the server protocol version
---
--- Returns protocol version
-function DatabaseConnection:protocol_version()
-
--- Get the server server version
---
--- Returns server version
-function DatabaseConnection:server_version()
-
--- Activate this connection
---
--- Avoid using this as it's done automatically most of the time.
--- Use only if you know what you're doing.
-function DatabaseConnection:activate()
-
--- Deactivate the currect connection
-function DatabaseConnection:deactivate()
-
--- Get whether the connection is open
-function DatabaseConnection:is_open()
-
--- Prepare a query (register it with the server)
---
--- name: ID of the prepared statement
--- definition: the query itself
---
--- Returns true if successful
-function DatabaseConnection:prepare(name, definition)
-
--- Unprepare the query (unregister it on the server)
---
--- name: ID of the prepared statement
---
--- Returns true if successful
-function DatabaseConnection:unprepare(name)
-
--- Set the current connection encoding
--- Literally all this does:
--- "SET CLIENT_ENCODING TO '" + new_encoding + "';"
---
--- encoding: Encoding to set (default utf8)
-function DatabaseConnection:set_encoding(encoding)
-
--- DatabaseQuery class
-
--- Execute the current query
-function DatabaseQuery:run()
-
--- Set the query to be synchronous.
--- This will lock the current thread while the query is being executed.
--- USE WITH CAUTION
---
--- sync: set to false for default async behavior
-function DatabaseQuery:set_sync(sync)
-
--- Called once the query returns.
---
--- Callback arguments:
--- result: the result table. Numerically indexed (e.g. { [1] = {...}, [2] = {...} })
--- size: the amount of items in the results table
-DatabaseQuery:on("success", function(result, size) end)
-
--- Called if the query has failed.
---
--- Callback arguments:
--- error: the error message returned by the server
-DatabaseQuery:on("error", function(error) end)
-
--- PreparedQuery
--- PreparedQuery shares all of the members with DatabaseQuery, except for #run:
-
--- Execute the prepared query
---
--- vararg: which arguments to place into the blank spots of the prepared query.
-function PreparedQuery:run(...)
+db:connect()
 ```
+
+Prepared queries use PostgreSQL-native placeholders. MySQLOO `?` placeholders are intentionally not translated because `?`, `?|`, and `?&` are valid PostgreSQL operators.
+
+```lua
+local query = db:prepare("SELECT $1::int AS value")
+query:setNumber(1, 42)
+query:start()
+```
+
+Use PostgreSQL `RETURNING` for generated IDs:
+
+```sql
+INSERT INTO users (name) VALUES ($1) RETURNING id
+```
+
+`query:lastInsert()` intentionally throws because PostgreSQL has no MySQL-style connection-scoped insert id.

@@ -248,9 +248,9 @@ prepared:setArray(index, values)
 Placeholder policy:
 
 - Native PostgreSQL SQL should use `$1`, `$2`, `$3`.
-- MySQLOO-compatible prepared SQL using `?` should be accepted and translated to `$1`, `$2`, `$3`.
-- Translation must ignore `?` inside SQL strings, quoted identifiers, dollar-quoted strings, and comments.
-- If translation cannot be made reliable, make it opt-in and document it clearly.
+- MySQLOO-compatible `?` placeholders should not be accepted by default.
+- PostgreSQL uses `?`, `?|`, and `?&` as real operators, especially for JSON/JSONB, so automatic placeholder translation can corrupt valid PostgreSQL SQL.
+- Migration documentation should tell users to replace prepared placeholders with PostgreSQL-native `$1`, `$2`, `$3`.
 
 ### Transaction Methods
 
@@ -316,14 +316,15 @@ Plan:
 
 MySQLOO uses this to enable or disable multi-statement MySQL behavior.
 
-PostgreSQL can execute multiple statements in one SQL string through the simple query protocol. PostgreSQL's extended query protocol allows at most one SQL command, so it can be used as the enforcement mechanism for `setMultiStatements(false)` without writing a SQL parser in the module.
+PostgreSQL can execute multiple statements in one SQL string through the simple query protocol, but the current PostgreSQL backend does not expose MySQLOO-compatible multi-result chains. The safe baseline is single-statement execution.
 
 Plan:
 
 - Provide the method for compatibility.
-- `db:setMultiStatements(true)` stores the default permissive behavior for raw queries.
-- `db:setMultiStatements(false)` stores a single-statement-only mode for raw queries.
-- In single-statement-only mode, route raw `db:query(sql)` execution through PostgreSQL extended execution with zero parameters, such as `PQexecParams` or a libpqxx equivalent.
+- Default to single-statement-only raw queries.
+- `db:setMultiStatements(false)` stores the single-statement-only mode for raw queries.
+- `db:setMultiStatements(true)` should throw until the backend can drain and expose all PostgreSQL result sets correctly.
+- Route raw `db:query(sql)` execution through PostgreSQL extended execution with zero parameters, such as `PQexecParams` or a libpqxx equivalent, so PostgreSQL enforces one statement.
 - Do not manually scan semicolons or parse SQL. PostgreSQL must be the parser.
 - If the active libpqxx/libpq execution layer cannot enforce extended single-statement execution, `db:setMultiStatements(false)` should throw immediately instead of pretending to enforce the setting.
 - Prepared queries are already single-statement-oriented and should not need separate enforcement.
@@ -336,7 +337,7 @@ Plan:
 
 - Provide the method.
 - If the module has a local SQL-to-prepared-name cache, use this method to enable or disable that cache.
-- If there is no cache, treat this method as a no-op.
+- If there is no cache, throw clearly instead of pretending to change behavior.
 - Prepared query objects should keep enough durable client-side data, such as SQL text and parameters, to prepare again on a new connection when needed.
 - Losing a cache entry must not make a prepared query fail by itself. It should only mean the statement gets prepared again.
 
@@ -351,13 +352,14 @@ Plan:
 - Match MySQLOO compatibility behavior by not re-firing `onConnected` for internal reconnects.
 - Add PostgreSQL-native `db:onReconnect()` and `db:onReconnectFailed(err)` callbacks for applications that want observability.
 - Reconnect before starting a queued query if the connection is known dead.
-- If a queued operation fails with a retriable connection error, reconnect and retry that same operation once, matching MySQLOO's `runQuery(..., retry=true)` behavior.
-- Treat a transaction as one queued operation for compatibility: if it hits a retriable connection error, reconnect and retry the transaction once.
+- If a queued operation fails with a retriable connection error after execution has started, reconnect for future work but do not replay that operation automatically.
+- This intentionally diverges from MySQLOO's one-shot replay behavior because PostgreSQL writes may have reached the server before the client observed the connection failure.
+- Treat a transaction as one queued operation for scheduling and callbacks, but do not automatically replay it after connection loss.
 - Define retriable connection errors primarily by PostgreSQL SQLSTATE class `08` connection exceptions, using libpq/libpqxx error metadata where available.
 - Exclude SQLSTATE `08007` (`transaction_resolution_unknown`) from automatic retry unless a future explicit compatibility mode chooses to match MySQLOO more aggressively.
 - Use connection status fallbacks when SQLSTATE is unavailable, such as `PQstatus(conn) == CONNECTION_BAD`, a broken-connection exception type, or the connection object reporting closed after failure.
 - Do not treat normal SQL errors as reconnect-retryable, including syntax errors (`42xxx`), constraint violations (`23xxx`), auth failures (`28P01`), deadlocks (`40P01`), or serialization failures (`40001`). Those may be application-level retry cases, not reconnect cases.
-- Do not add extra commit-outcome detection or transaction replay machinery in the first implementation. Document that connection loss around commit can have an unknown outcome, as with any client-side retry system.
+- Do not add extra commit-outcome detection or transaction replay machinery in the first implementation. Document that connection loss around commit can have an unknown outcome.
 - Do not proactively rebuild session state after reconnect.
 - Do not proactively rebuild optional prepared statement caches. Dropping them on reconnect is fine; prepared queries should prepare lazily again from their SQL text when executed.
 - Reapply only the connection options required to establish the replacement connection, such as host, credentials, database, port, timeout, and SSL parameters.
@@ -390,7 +392,7 @@ Plan:
 - `OPTION_NAMED_FIELDS`: export for compatibility, no-op.
 - `OPTION_INTERPRET_DATA`: export for compatibility, no-op.
 - `OPTION_CACHE`: export for compatibility, no-op or tie to prepared statement cache if implemented.
-- `prepared:putNewParameters()`: implement as a no-op compatibility method.
+- `prepared:putNewParameters()`: throw until PostgreSQL multi-result access is implemented; executing hidden batches without exposing results is misleading.
 
 ## PostgreSQL-Native Features To Preserve Or Add
 
@@ -421,7 +423,7 @@ Implementation direction:
 - Treat `$1`, `$2`, `$3` placeholders as the PostgreSQL-native prepared query format.
 - Execute parameters through PostgreSQL parameter APIs, such as libpqxx parameter support or direct `PQexecParams` / prepared statement APIs.
 - Never implement native parameters by manually interpolating escaped strings into SQL.
-- Keep optional MySQLOO `?` placeholder translation as a migration feature, but do not make it the native path.
+- Do not translate `?` placeholders; users must migrate prepared SQL to PostgreSQL-native placeholders.
 
 ### `RETURNING`-Based Inserts
 
@@ -584,7 +586,7 @@ Responsibilities:
 
 - `PgDatabase`: PostgreSQL connection state, reconnect, per-database queue, connect/disconnect, options.
 - `PgQuery`: SQL text, status, result data, error data, cancellation.
-- `PgPreparedQuery`: SQL text, parameter storage, placeholder translation, PostgreSQL parameter execution.
+- `PgPreparedQuery`: SQL text, parameter storage, PostgreSQL parameter execution.
 - `PgTransaction`: ordered set of staged queries executed in one PostgreSQL transaction.
 - `PgResultSet`: rows, columns, affected rows, command status, type metadata.
 - `PgWorkerQueue`: async execution and callback delivery handoff, adapted from MySQLOO's database worker model.
@@ -688,7 +690,7 @@ Tasks:
 - Validate indexes are greater than zero.
 - Execute using PostgreSQL parameters, not manual string interpolation.
 - Support native `$n` placeholders.
-- Add robust optional `?` translation for MySQLOO migration.
+- Do not translate MySQLOO `?` placeholders because that conflicts with PostgreSQL operators.
 
 ### 8. Implement Transactions
 
@@ -769,7 +771,7 @@ Exit criteria:
 - Implement stable result storage.
 - Implement `OPTION_NUMERIC_FIELDS`.
 - Add initial type conversion policy.
-- Decide and implement multi-result behavior.
+- Keep public `hasMoreResults()` false and `getNextResults()` unsupported until PostgreSQL multi-result chains are implemented correctly.
 
 Exit criteria:
 
@@ -782,12 +784,11 @@ Exit criteria:
 - Rework prepared query internals.
 - Implement parameter setters.
 - Implement native `$n` parameters.
-- Implement optional `?` placeholder translation.
+- Reject/document MySQLOO `?` placeholder migration as a SQL change users must make.
 - Fix lifetime issues in current prepared query code.
 
 Exit criteria:
 
-- MySQLOO-style `db:prepare("SELECT ?")` can work if placeholder translation is enabled.
 - PostgreSQL-native `db:prepare("SELECT $1")` works without translation.
 
 ### Phase 5: Transactions
@@ -885,12 +886,11 @@ Expected limitations should be asserted explicitly, not treated as accidental fa
 - Add MySQLOO compatibility reference.
 - Add migration guide.
 - Add examples using `RETURNING` instead of `lastInsert()`.
-- Add prepared statement examples for both `$1` and `?` compatibility mode.
+- Add prepared statement examples using PostgreSQL `$1` placeholders.
 
 ## Open Questions
 
 - Should the module table be named only `pg`, or should there be an opt-in compatibility loader that registers `mysqloo` for legacy deployments?
-- Should `?` placeholder translation be always enabled for `db:prepare`, or only in an explicit compatibility mode?
 - Should type conversion default to preserving large integers as strings?
 - Should PostgreSQL-native helpers live directly on the same objects or under `pg.native` / `pg.postgres`?
 - Should old `conn:query(...):run()` API remain as aliases after the refactor?

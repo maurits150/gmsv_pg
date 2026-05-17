@@ -1,5 +1,5 @@
-1. Locate the files for your OS (windows or linux)
-2. Put these files to the folder where your srcds executable is, which is usually these paths:
+1. Locate the files for your OS (windows or linux).
+2. Put these files where the server process can load shared libraries. For local Garry's Mod this is usually the game root or `bin/` folder; for srcds it is the folder where the executable is:
 
 On Windows:
 `.\SERVER_DIR\srcds.exe`
@@ -7,7 +7,16 @@ On Windows:
 On any Linux:
 `./SERVER_DIR/srcds_linux`
 
-Yes, the "bin" folder from this folder is supposed to go on top of the "SERVER_DIR/bin" folder.
+Yes, if a runtime dependency folder contains a `bin` folder, that folder is supposed to go on top of the server's `bin` folder.
+
+On Linux, `libpq.so.5` must match the host's available SSL/runtime libraries. If the module fails to load with a missing SSL library such as `libssl.so.1.1`, install the 32-bit libpq package and refresh the bundled runtime dependency from the host:
+
+```sh
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install libpq-dev:i386
+cp /lib/i386-linux-gnu/libpq.so.5 runtime_depends/linux/libpq.so.5
+```
 
 **In case it doesn't work on Linux:**
 ```sh
