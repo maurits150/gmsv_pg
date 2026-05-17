@@ -85,7 +85,15 @@ QueryResultStatus IQuery::getResultStatus() const {
 }
 
 bool IQueryData::isFinished() { return finished; }
-void IQueryData::setFinished(bool isFinished) { finished = isFinished; }
+void IQueryData::setFinished(bool isFinished) {
+    finished = isFinished;
+    m_finishCondition.notify_all();
+}
+
+void IQueryData::waitUntilFinished() {
+    std::unique_lock<std::mutex> lock(m_finishMutex);
+    m_finishCondition.wait(lock, [this] { return finished.load(); });
+}
 QueryStatus IQueryData::getStatus() { return m_status; }
 void IQueryData::setStatus(QueryStatus status) { m_status = status; }
 QueryResultStatus IQueryData::getResultStatus() { return m_resultStatus; }

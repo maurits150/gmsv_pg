@@ -7,16 +7,19 @@
 #include <condition_variable>
 #include <algorithm>
 #include <functional>
+#include <utility>
 
 template<typename T>
 class BlockingQueue {
 public:
-    void put(T elem) {
+    bool put(T elem) {
         {
-            std::lock_guard<std::recursive_mutex> lock(mutex);
-            backingQueue.push_back(elem);
+            std::lock_guard<std::mutex> lock(mutex);
+            if (closed) return false;
+            backingQueue.push_back(std::move(elem));
         }
         waitObj.notify_all();
+        return true;
     }
 
     bool empty() {
@@ -24,7 +27,7 @@ public:
     }
 
     bool swapToFrontIf(std::function<bool(T)> func) {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(mutex);
         auto pos = std::find_if(backingQueue.begin(), backingQueue.end(), func);
         if (pos != backingQueue.begin() && pos != backingQueue.end()) {
             std::iter_swap(pos, backingQueue.begin());
@@ -34,7 +37,7 @@ public:
     }
 
     bool removeIf(std::function<bool(T)> func) {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(mutex);
         auto it = std::remove_if(backingQueue.begin(), backingQueue.end(), func);
         bool removed = it != backingQueue.end();
         backingQueue.erase(it, backingQueue.end());
@@ -42,34 +45,49 @@ public:
     }
 
     void remove(T elem) {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(mutex);
         backingQueue.erase(std::remove(backingQueue.begin(), backingQueue.end(), elem), backingQueue.end());
     }
 
     size_t size() {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(mutex);
         return backingQueue.size();
     }
 
-    T take() {
-        std::unique_lock<std::recursive_mutex> lock(mutex);
-        waitObj.wait(lock, [this] { return this->size() > 0; });
-        auto front = backingQueue.front();
+    bool take(T &out) {
+        std::unique_lock<std::mutex> lock(mutex);
+        waitObj.wait(lock, [this] { return closed || !backingQueue.empty(); });
+        if (backingQueue.empty()) return false;
+        out = std::move(backingQueue.front());
         backingQueue.pop_front();
-        return front;
+        return true;
     }
 
     std::deque<T> clear() {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
-        std::deque<T> returnQueue = backingQueue;
+        std::lock_guard<std::mutex> lock(mutex);
+        std::deque<T> returnQueue = std::move(backingQueue);
         backingQueue.clear();
         return returnQueue;
     }
 
+    void close() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            closed = true;
+        }
+        waitObj.notify_all();
+    }
+
+    bool isClosed() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return closed;
+    }
+
 private:
     std::deque<T> backingQueue{};
-    std::recursive_mutex mutex{};
-    std::condition_variable_any waitObj{};
+    bool closed = false;
+    std::mutex mutex{};
+    std::condition_variable waitObj{};
 };
 
 #endif

@@ -110,7 +110,6 @@ private:
     void connectRun();
     void run();
     void runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
-    void abortWaitingQuery();
     void failWaitingQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
                           const std::string &reason);
     bool attemptConnection();
@@ -123,11 +122,8 @@ private:
     std::thread m_thread;
     std::mutex m_connectMutex;
     std::mutex m_queryMutex;
-    std::mutex m_queryWaitMutex;
     std::mutex m_reconnectEventMutex;
     std::condition_variable m_connectWakeupVariable;
-    std::condition_variable m_queryWaitWakeupVariable;
-    std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> m_waitingQuery = {nullptr, nullptr};
 
     std::string m_connectionError;
     std::deque<std::pair<bool, std::string>> m_reconnectEvents;

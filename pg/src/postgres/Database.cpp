@@ -44,7 +44,11 @@ void Database::enqueueQuery(const std::shared_ptr<IQuery> &query, const std::sha
         throw PGException("Database is disconnected.");
     }
     data->setStatus(QUERY_WAITING);
-    queryQueue.put(std::make_pair(query, data));
+    if (!queryQueue.put(std::make_pair(query, data))) {
+        data->setStatus(QUERY_ABORTED);
+        data->setFinished(true);
+        throw PGException("Database is disconnected.");
+    }
 }
 
 bool Database::swapQueryToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
@@ -86,7 +90,7 @@ void Database::shutdown() {
         pair.second->setStatus(QUERY_ABORTED);
         pair.second->setFinished(true);
     }
-    queryQueue.put(std::make_pair(std::shared_ptr<IQuery>(), std::shared_ptr<IQueryData>()));
+    queryQueue.close();
 }
 
 bool Database::ping() {
@@ -183,7 +187,8 @@ void Database::connectRun() {
         m_status = DATABASE_CONNECTION_FAILED;
         m_connectWakeupVariable.notify_one();
         disconnected = true;
-        abortWaitingQuery();
+        m_canWait = false;
+        queryQueue.close();
         return;
         }
         m_success = true;
@@ -197,7 +202,7 @@ void Database::connectRun() {
         std::lock_guard<std::mutex> lock(m_queryMutex);
         m_connection.reset();
     }
-    abortWaitingQuery();
+    m_canWait = false;
     disconnected = true;
     if (m_status == DATABASE_CONNECTED) m_status = DATABASE_NOT_CONNECTED;
 }
@@ -261,8 +266,8 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
 
 void Database::run() {
     while (true) {
-        auto pair = queryQueue.take();
-        if (!pair.first) return;
+        std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> pair;
+        if (!queryQueue.take(pair)) return;
         auto data = pair.second;
         if (data->getStatus() == QUERY_ABORTED) {
             data->setFinished(true);
@@ -279,37 +284,17 @@ void Database::run() {
             data->setStatus(QUERY_COMPLETE);
         }
         finishedQueries.put(pair);
-        {
-            std::unique_lock<std::mutex> lock(m_queryWaitMutex);
-            data->setFinished(true);
-            if (m_waitingQuery.first == pair.first && m_waitingQuery.second == data) {
-                m_waitingQuery = std::make_pair(nullptr, nullptr);
-            }
-        }
-        m_queryWaitWakeupVariable.notify_all();
+        data->setFinished(true);
     }
 }
 
 void Database::waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
-    std::unique_lock<std::mutex> lock(m_queryWaitMutex);
     if (!m_canWait) {
         failWaitingQuery(query, data, "Can not wait on query, database is not connected or connection failed.");
         return;
     }
     if (data->isFinished()) return;
-    m_waitingQuery = std::make_pair(query, data);
-    m_queryWaitWakeupVariable.wait(lock, [data] { return data->isFinished(); });
-}
-
-void Database::abortWaitingQuery() {
-    std::unique_lock<std::mutex> lock(m_queryWaitMutex);
-    m_canWait = false;
-    if (m_waitingQuery.first && m_waitingQuery.second) {
-        failWaitingQuery(m_waitingQuery.first, m_waitingQuery.second,
-                         "The database of the query you were waiting on was disconnected.");
-        m_waitingQuery = std::make_pair(nullptr, nullptr);
-    }
-    m_queryWaitWakeupVariable.notify_all();
+    data->waitUntilFinished();
 }
 
 void Database::failWaitingQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,

@@ -87,6 +87,7 @@ public:
     void setError(std::string err) { m_errorText = std::move(err); }
     bool isFinished();
     void setFinished(bool isFinished);
+    void waitUntilFinished();
     QueryStatus getStatus();
     void setStatus(QueryStatus status);
     QueryResultStatus getResultStatus();
@@ -96,6 +97,8 @@ public:
 protected:
     std::string m_errorText;
     std::atomic<bool> finished{false};
+    std::mutex m_finishMutex;
+    std::condition_variable m_finishCondition;
     std::atomic<QueryStatus> m_status{QUERY_NOT_RUNNING};
     std::atomic<QueryResultStatus> m_resultStatus{QUERY_NONE};
     bool m_wasFirstData = false;
