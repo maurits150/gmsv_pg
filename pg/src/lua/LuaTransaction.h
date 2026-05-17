@@ -7,9 +7,22 @@
 
 class LuaTransaction : public LuaIQuery {
 public:
-    std::deque<std::shared_ptr<QueryData> > m_addedQueryData = {};
+    struct AddedQuery {
+        int tableReference = 0;
+        std::shared_ptr<QueryData> data;
+
+        AddedQuery(int tableReference, std::shared_ptr<QueryData> data)
+                : tableReference(tableReference), data(std::move(data)) {}
+    };
+
+    // Authoritative transaction query list. getQueries() exposes a Lua snapshot of these refs.
+    std::deque<AddedQuery> m_addedQueries = {};
 
     std::shared_ptr<IQueryData> buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) override;
+
+    void clearAddedQueries(ILuaBase *LUA);
+
+    void onDestroyedByLua(ILuaBase *LUA) override;
 
     static void createMetaTable(ILuaBase *LUA);
 

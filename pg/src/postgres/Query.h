@@ -27,7 +27,6 @@ public:
     unsigned long long oid();
     bool hasMoreResults();
     void getNextResults();
-    virtual std::shared_ptr<QueryData> buildQueryData();
     std::string getSQLString() override { return m_query; }
 
     static std::shared_ptr<Query> create(const std::shared_ptr<Database> &database, const std::string &query);

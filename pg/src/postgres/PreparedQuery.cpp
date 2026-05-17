@@ -8,46 +8,40 @@
 #include "Database.h"
 
 PreparedQuery::PreparedQuery(const std::shared_ptr<Database> &database, std::string query)
-    : Query(database, std::move(query)) {
-    m_parameters.emplace_back();
-}
+    : Query(database, std::move(query)) {}
 
 PreparedQuery::~PreparedQuery() = default;
 
 void PreparedQuery::clearParameters() {
     m_parameters.clear();
-    m_parameters.emplace_back();
 }
 
 void PreparedQuery::setNumber(unsigned int index, double value) {
     if (index < 1) throw PGException("Index must be greater than 0");
-    m_parameters.back()[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_NUMBER, numberToString(value));
+    m_parameters[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_NUMBER, numberToString(value));
 }
 
 void PreparedQuery::setString(unsigned int index, const std::string &value) {
     if (index < 1) throw PGException("Index must be greater than 0");
-    m_parameters.back()[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_STRING, value);
+    m_parameters[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_STRING, value);
 }
 
 void PreparedQuery::setBoolean(unsigned int index, bool value) {
     if (index < 1) throw PGException("Index must be greater than 0");
-    m_parameters.back()[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_BOOLEAN, value ? "true" : "false");
+    m_parameters[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_BOOLEAN, value ? "true" : "false");
 }
 
 void PreparedQuery::setNull(unsigned int index) {
     if (index < 1) throw PGException("Index must be greater than 0");
-    m_parameters.back()[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_NULL);
+    m_parameters[index] = std::make_shared<PreparedQueryField>(index, PREPARED_FIELD_NULL);
 }
 
 void PreparedQuery::putNewParameters() {
     throw PGException("pg: putNewParameters() is not supported until PostgreSQL multi-result access is implemented");
 }
 
-std::shared_ptr<QueryData> PreparedQuery::buildQueryData() {
-    std::shared_ptr<PreparedQueryData> data(new PreparedQueryData());
-    data->m_parameters = m_parameters;
-    while (m_parameters.size() > 1) m_parameters.pop_front();
-    return std::dynamic_pointer_cast<QueryData>(data);
+PreparedParameterMap PreparedQuery::snapshotParameters() const {
+    return m_parameters;
 }
 
 std::shared_ptr<PreparedQuery> PreparedQuery::create(const std::shared_ptr<Database> &database, std::string query) {
@@ -69,18 +63,16 @@ void PreparedQuery::executeInTransaction(Database &, pqxx::connection &connectio
 
     connection.prepare(statementName, m_query);
     try {
-        for (auto &params : data->m_parameters) {
-            pqxx::prepare::invocation invocation = tx.prepared(statementName);
-            unsigned int count = maxParameterIndex(params);
-            for (unsigned int i = 1; i <= count; ++i) {
-                auto it = params.find(i);
-                if (it == params.end() || it->second->m_type == PREPARED_FIELD_NULL) invocation();
-                else invocation(it->second->m_value);
-            }
-            pqxx::result result = invocation.exec();
-            data->m_results.emplace_back(result);
-            data->m_affectedRows.push_back(result.affected_rows());
+        pqxx::prepare::invocation invocation = tx.prepared(statementName);
+        unsigned int count = maxParameterIndex(data->m_parameters);
+        for (unsigned int i = 1; i <= count; ++i) {
+            auto it = data->m_parameters.find(i);
+            if (it == data->m_parameters.end() || it->second->m_type == PREPARED_FIELD_NULL) invocation();
+            else invocation(it->second->m_value);
         }
+        pqxx::result result = invocation.exec();
+        data->m_results.emplace_back(result);
+        data->m_affectedRows.push_back(result.affected_rows());
         connection.unprepare(statementName);
     } catch (...) {
         try { connection.unprepare(statementName); } catch (...) {}
@@ -88,7 +80,7 @@ void PreparedQuery::executeInTransaction(Database &, pqxx::connection &connectio
     }
 }
 
-unsigned int PreparedQuery::maxParameterIndex(const std::unordered_map<unsigned int, std::shared_ptr<PreparedQueryField>> &params) {
+unsigned int PreparedQuery::maxParameterIndex(const PreparedParameterMap &params) {
     unsigned int max = 0;
     for (auto &pair : params) if (pair.first > max) max = pair.first;
     return max;

@@ -6,34 +6,21 @@ PG_LUA_FUNCTION(addQuery) {
     auto luaTransaction = LuaObject::getLuaObject<LuaTransaction>(LUA);
 
     auto addedLuaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA, 2);
-    LUA->Push(1);
-    LUA->GetField(-1, "__queries");
-    if (LUA->IsType(-1, GarrysMod::Lua::Type::Nil)) {
-        LUA->Pop();
-        LUA->CreateTable();
-        LUA->SetField(-2, "__queries");
-        LUA->GetField(-1, "__queries");
-    }
-    int tblIndex = LUA->Top();
-    LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
-    LUA->GetField(-1, "table");
-    LUA->GetField(-1, "insert");
-    LUA->Push(tblIndex);
-    LUA->Push(2);
-    LUA->Call(2, 0);
-    LUA->Pop(4);
-
     auto queryData = std::dynamic_pointer_cast<QueryData>(addedLuaQuery->buildQueryData(LUA, 2, false));
-
-    luaTransaction->m_addedQueryData.push_back(queryData);
+    LUA->Push(2);
+    int queryReference = LuaReferenceCreate(LUA);
+    luaTransaction->m_addedQueries.emplace_back(queryReference, queryData);
     return 0;
 }
 
 PG_LUA_FUNCTION(getQueries) {
-    LUA->GetField(1, "__queries");
-    if (LUA->IsType(-1, GarrysMod::Lua::Type::Nil)) {
-        LUA->Pop();
-        LUA->CreateTable();
+    auto luaTransaction = LuaObject::getLuaObject<LuaTransaction>(LUA);
+    LUA->CreateTable();
+    int index = 0;
+    for (const auto &entry: luaTransaction->m_addedQueries) {
+        LUA->PushNumber((double) (++index));
+        LUA->ReferencePush(entry.tableReference);
+        LUA->SetTable(-3);
     }
     return 1;
 }
@@ -41,12 +28,7 @@ PG_LUA_FUNCTION(getQueries) {
 PG_LUA_FUNCTION(clearQueries) {
     auto luaTransaction = LuaObject::getLuaObject<LuaTransaction>(LUA);
 
-    LUA->Push(1);
-    LUA->CreateTable();
-    LUA->SetField(-2, "__queries");
-    LUA->Pop();
-
-    luaTransaction->m_addedQueryData.clear();
+    luaTransaction->clearAddedQueries(LUA);
 
     return 0;
 }
@@ -65,27 +47,17 @@ void LuaTransaction::createMetaTable(ILuaBase *LUA) {
 }
 
 std::shared_ptr<IQueryData> LuaTransaction::buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) {
-    LUA->GetField(stackPosition, "__queries");
     std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> queries;
-    if (LUA->GetType(-1) != GarrysMod::Lua::Type::Nil) {
-        for (size_t i = 0; i < this->m_addedQueryData.size(); i++) {
-            auto &queryData = this->m_addedQueryData[i];
-            LUA->PushNumber((double) (i + 1));
-            LUA->RawGet(-2);
-            if (!LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
-                LUA->Pop(); //Nil or whatever else is on the stack
-                break;
-            }
-            auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA, -1);
-            auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
-            query->addQueryData(queryData);
-            queries.emplace_back(query, queryData);
-            LUA->Pop(); //Query
-        }
+    for (auto &entry: this->m_addedQueries) {
+        LUA->ReferencePush(entry.tableReference);
+        auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA, -1);
+        auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
+        query->addQueryData(entry.data);
+        queries.emplace_back(query, entry.data);
+        LUA->Pop(); //Query
     }
-    LUA->Pop(); //Queries table
 
-    auto data = Transaction::buildQueryData(queries);
+    std::shared_ptr<IQueryData> data(new LuaTransactionData(queries));
     if (shouldRef) {
         LuaIQuery::referenceCallbacks(LUA, stackPosition, *data);
     }
@@ -148,4 +120,19 @@ void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Tra
 
     LUA->Pop(); //Table of results
 
+}
+
+void LuaTransaction::clearAddedQueries(ILuaBase *LUA) {
+    for (auto &entry: m_addedQueries) {
+        if (entry.tableReference != 0) {
+            LuaReferenceFree(LUA, entry.tableReference);
+            entry.tableReference = 0;
+        }
+    }
+    m_addedQueries.clear();
+}
+
+void LuaTransaction::onDestroyedByLua(ILuaBase *LUA) {
+    clearAddedQueries(LUA);
+    LuaIQuery::onDestroyedByLua(LUA);
 }

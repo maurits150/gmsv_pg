@@ -8,7 +8,7 @@
 
 #include "Query.h"
 
-class TransactionData final : public IQueryData {
+class TransactionData : public IQueryData {
     friend class Transaction;
 
 public:
@@ -23,8 +23,6 @@ class Transaction : public IQuery {
     friend class Database;
 
 public:
-    static std::shared_ptr<TransactionData>
-    buildQueryData(const std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> &queries);
     static std::shared_ptr<Transaction> create(const std::shared_ptr<Database> &database);
     std::string getSQLString() override { return ""; }
 

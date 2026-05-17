@@ -2,7 +2,6 @@
 #ifndef PG_PREPAREDQUERY_H
 #define PG_PREPAREDQUERY_H
 
-#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -29,12 +28,15 @@ private:
     std::string m_value;
 };
 
+using PreparedParameterMap = std::unordered_map<unsigned int, std::shared_ptr<PreparedQueryField>>;
+
 class PreparedQueryData : public QueryData {
     friend class PreparedQuery;
 
 protected:
-    std::deque<std::unordered_map<unsigned int, std::shared_ptr<PreparedQueryField>>> m_parameters;
-    PreparedQueryData() = default;
+    explicit PreparedQueryData(PreparedParameterMap parameters = {}) : m_parameters(std::move(parameters)) {}
+
+    PreparedParameterMap m_parameters;
 };
 
 class PreparedQuery : public Query {
@@ -53,17 +55,17 @@ public:
     void setBoolean(unsigned int index, bool value);
     void setNull(unsigned int index);
     void putNewParameters();
-    std::shared_ptr<QueryData> buildQueryData() override;
+    PreparedParameterMap snapshotParameters() const;
 
     static std::shared_ptr<PreparedQuery> create(const std::shared_ptr<Database> &database, std::string query);
 
 private:
     PreparedQuery(const std::shared_ptr<Database> &database, std::string query);
 
-    static unsigned int maxParameterIndex(const std::unordered_map<unsigned int, std::shared_ptr<PreparedQueryField>> &params);
+    static unsigned int maxParameterIndex(const PreparedParameterMap &params);
     static std::string numberToString(double value);
 
-    std::deque<std::unordered_map<unsigned int, std::shared_ptr<PreparedQueryField>>> m_parameters;
+    PreparedParameterMap m_parameters;
 };
 
 #endif

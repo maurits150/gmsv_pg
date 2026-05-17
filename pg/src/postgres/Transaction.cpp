@@ -3,11 +3,6 @@
 
 #include "Database.h"
 
-std::shared_ptr<TransactionData>
-Transaction::buildQueryData(const std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> &queries) {
-    return std::shared_ptr<TransactionData>(new TransactionData(queries));
-}
-
 std::shared_ptr<Transaction> Transaction::create(const std::shared_ptr<Database> &database) {
     return std::shared_ptr<Transaction>(new Transaction(database));
 }

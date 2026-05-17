@@ -54,10 +54,6 @@ void Query::getNextResults() {
     throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
 }
 
-std::shared_ptr<QueryData> Query::buildQueryData() {
-    return std::shared_ptr<QueryData>(new QueryData());
-}
-
 std::shared_ptr<Query> Query::create(const std::shared_ptr<Database> &database, const std::string &query) {
     return std::shared_ptr<Query>(new Query(database, query));
 }

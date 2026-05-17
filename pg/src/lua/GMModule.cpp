@@ -103,11 +103,11 @@ GMOD_MODULE_OPEN() {
     LUA->PushNumber(OPTION_NUMERIC_FIELDS);
     LUA->SetField(-2, "OPTION_NUMERIC_FIELDS");
     LUA->PushNumber(OPTION_INTERPRET_DATA);
-    LUA->SetField(-2, "OPTION_INTERPRET_DATA"); //Not used anymore
+    LUA->SetField(-2, "OPTION_INTERPRET_DATA"); //Compatibility constant; supported types are interpreted by default.
     LUA->PushNumber(OPTION_NAMED_FIELDS);
-    LUA->SetField(-2, "OPTION_NAMED_FIELDS"); //Not used anymore
+    LUA->SetField(-2, "OPTION_NAMED_FIELDS"); //Compatibility constant; named fields are the default.
     LUA->PushNumber(OPTION_CACHE);
-    LUA->SetField(-2, "OPTION_CACHE"); //Not used anymore
+    LUA->SetField(-2, "OPTION_CACHE"); //Compatibility constant; prepared cache is unsupported.
 
     LUA->PushNumber(SSL_MODE_DISABLED);
     LUA->SetField(-2, "SSL_MODE_DISABLED");

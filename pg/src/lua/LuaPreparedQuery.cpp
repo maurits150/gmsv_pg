@@ -89,7 +89,7 @@ void LuaPreparedQuery::createMetaTable(ILuaBase *LUA) {
 
 std::shared_ptr<IQueryData> LuaPreparedQuery::buildQueryData(ILuaBase* LUA, int stackPosition, bool shouldRef) {
     auto query = (PreparedQuery*) m_query.get();
-    auto data = query->buildQueryData();
+    std::shared_ptr<QueryData> data(new LuaPreparedQueryData(query->snapshotParameters()));
     if (shouldRef) {
         LuaIQuery::referenceCallbacks(LUA, stackPosition, *data);
     }

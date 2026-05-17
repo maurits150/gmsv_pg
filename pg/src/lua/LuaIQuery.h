@@ -6,19 +6,41 @@
 #include "LuaObject.h"
 #include "../postgres/IQuery.h"
 #include "../postgres/Query.h"
+#include "../postgres/PreparedQuery.h"
+#include "../postgres/Transaction.h"
 
 #include <utility>
 
+// Lua owns callback/table references for a single backend query execution.
+class LuaCallbackReferences {
+public:
+    virtual ~LuaCallbackReferences() = default;
+
+    int successReference = 0;
+    int errorReference = 0;
+    int abortReference = 0;
+    int onDataReference = 0;
+    int tableReference = 0;
+};
+
+class LuaQueryData final : public QueryData, public LuaCallbackReferences {
+public:
+    LuaQueryData() = default;
+};
+
+class LuaPreparedQueryData final : public PreparedQueryData, public LuaCallbackReferences {
+public:
+    explicit LuaPreparedQueryData(PreparedParameterMap parameters) : PreparedQueryData(std::move(parameters)) {}
+};
+
+class LuaTransactionData final : public TransactionData, public LuaCallbackReferences {
+public:
+    explicit LuaTransactionData(std::deque<std::pair<std::shared_ptr<Query>, std::shared_ptr<IQueryData>>> queries)
+            : TransactionData(std::move(queries)) {}
+};
+
 class LuaIQuery : public LuaObject {
 public:
-    struct CallbackReferences {
-        int successReference = 0;
-        int errorReference = 0;
-        int abortReference = 0;
-        int onDataReference = 0;
-        int tableReference = 0;
-    };
-
     static void addMetaTableFunctions(ILuaBase *lua);
 
     std::shared_ptr<IQuery> m_query;
@@ -33,7 +55,7 @@ public:
 
     static void referenceCallbacks(ILuaBase *LUA, int stackPosition, IQueryData &data);
 
-    static CallbackReferences *getCallbackReferences(const std::shared_ptr<IQueryData> &data);
+    static LuaCallbackReferences *getCallbackReferences(const std::shared_ptr<IQueryData> &data);
 
     static void finishLuaQueryData(ILuaBase *LUA, const std::shared_ptr<IQuery> &query,
                                    const std::shared_ptr<IQueryData> &data);

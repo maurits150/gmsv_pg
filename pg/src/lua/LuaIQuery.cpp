@@ -5,11 +5,6 @@
 #include "LuaTransaction.h"
 #include "LuaDatabase.h"
 
-#include <unordered_map>
-
-static std::unordered_map<IQueryData *, LuaIQuery::CallbackReferences> queryCallbackReferences;
-
-
 PG_LUA_FUNCTION(start) {
     auto query = LuaIQuery::getLuaObject<LuaIQuery>(LUA);
     auto queryData = query->buildQueryData(LUA, 1, true);
@@ -127,31 +122,30 @@ void LuaIQuery::addMetaTableFunctions(ILuaBase *LUA) {
 }
 
 void LuaIQuery::referenceCallbacks(ILuaBase *LUA, int stackPosition, IQueryData &data) {
-    auto &refs = queryCallbackReferences[&data];
+    auto refs = dynamic_cast<LuaCallbackReferences *>(&data);
+    if (refs == nullptr) throw PGException("pg: Lua callback references require Lua-owned query data");
     LUA->Push(stackPosition);
-    refs.tableReference = LuaReferenceCreate(LUA);
+    refs->tableReference = LuaReferenceCreate(LUA);
 
-    if (refs.successReference == 0) {
-        refs.successReference = getFunctionReference(LUA, stackPosition, "onSuccess");
+    if (refs->successReference == 0) {
+        refs->successReference = getFunctionReference(LUA, stackPosition, "onSuccess");
     }
 
-    if (refs.abortReference == 0) {
-        refs.abortReference = getFunctionReference(LUA, stackPosition, "onAborted");
+    if (refs->abortReference == 0) {
+        refs->abortReference = getFunctionReference(LUA, stackPosition, "onAborted");
     }
 
-    if (refs.onDataReference == 0) {
-        refs.onDataReference = getFunctionReference(LUA, stackPosition, "onData");
+    if (refs->onDataReference == 0) {
+        refs->onDataReference = getFunctionReference(LUA, stackPosition, "onData");
     }
 
-    if (refs.errorReference == 0) {
-        refs.errorReference = getFunctionReference(LUA, stackPosition, "onError");
+    if (refs->errorReference == 0) {
+        refs->errorReference = getFunctionReference(LUA, stackPosition, "onError");
     }
 }
 
-LuaIQuery::CallbackReferences *LuaIQuery::getCallbackReferences(const std::shared_ptr<IQueryData> &data) {
-    auto it = queryCallbackReferences.find(data.get());
-    if (it == queryCallbackReferences.end()) return nullptr;
-    return &it->second;
+LuaCallbackReferences *LuaIQuery::getCallbackReferences(const std::shared_ptr<IQueryData> &data) {
+    return dynamic_cast<LuaCallbackReferences *>(data.get());
 }
 
 void LuaIQuery::finishLuaQueryData(ILuaBase *LUA, const std::shared_ptr<IQuery> &query,
@@ -162,15 +156,17 @@ void LuaIQuery::finishLuaQueryData(ILuaBase *LUA, const std::shared_ptr<IQuery> 
         }
     }
 
-    auto it = queryCallbackReferences.find(data.get());
-    if (it != queryCallbackReferences.end()) {
-        auto &refs = it->second;
-        if (refs.tableReference != 0) LuaReferenceFree(LUA, refs.tableReference);
-        if (refs.successReference != 0) LuaReferenceFree(LUA, refs.successReference);
-        if (refs.errorReference != 0) LuaReferenceFree(LUA, refs.errorReference);
-        if (refs.abortReference != 0) LuaReferenceFree(LUA, refs.abortReference);
-        if (refs.onDataReference != 0) LuaReferenceFree(LUA, refs.onDataReference);
-        queryCallbackReferences.erase(it);
+    if (auto refs = getCallbackReferences(data)) {
+        if (refs->tableReference != 0) LuaReferenceFree(LUA, refs->tableReference);
+        if (refs->successReference != 0) LuaReferenceFree(LUA, refs->successReference);
+        if (refs->errorReference != 0) LuaReferenceFree(LUA, refs->errorReference);
+        if (refs->abortReference != 0) LuaReferenceFree(LUA, refs->abortReference);
+        if (refs->onDataReference != 0) LuaReferenceFree(LUA, refs->onDataReference);
+        refs->tableReference = 0;
+        refs->successReference = 0;
+        refs->errorReference = 0;
+        refs->abortReference = 0;
+        refs->onDataReference = 0;
     }
 
     query->finishQueryData(data);

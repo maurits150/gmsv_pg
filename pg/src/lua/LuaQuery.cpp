@@ -196,8 +196,7 @@ void LuaQuery::createMetaTable(ILuaBase *LUA) {
 }
 
 std::shared_ptr<IQueryData> LuaQuery::buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) {
-    auto query = std::dynamic_pointer_cast<Query>(this->m_query);
-    auto data = query->buildQueryData();
+    std::shared_ptr<QueryData> data(new LuaQueryData());
     data->setStatus(QUERY_COMPLETE);
     if (shouldRef) {
         LuaIQuery::referenceCallbacks(LUA, stackPosition, *data);
