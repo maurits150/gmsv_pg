@@ -2,6 +2,7 @@
 project/
 .vscode/
 .idea/
+MySQLOO/
 
 gloo-cppcheck-build-dir/
 gloo.cppcheck
