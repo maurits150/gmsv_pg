@@ -21,7 +21,7 @@ From the server console, run:
 lua_run print(jit.os, jit.arch)
 ```
 
-Use the module binary matching that output. Current verified path is Linux 32-bit Garry's Mod (`Linux x86`). Windows support is inherited from the original project layout but is currently unverified in this fork/rework.
+Use the module binary matching that output. Current verified and shipped path is Linux 32-bit Garry's Mod (`Linux x86`). Windows support is inherited from the original project layout but is currently unverified in this fork/rework, and no Windows binary is currently shipped here.
 
 ### 2. Install the module binary
 
@@ -35,7 +35,6 @@ Use the module binary matching that output. Current verified path is Linux 32-bi
 
    ```text
    garrysmod/lua/bin/gmsv_pg_linux.dll   # Linux 32-bit
-   garrysmod/lua/bin/gmsv_pg_win32.dll   # Windows 32-bit, unverified in this fork
    ```
 
 The built Linux binary is produced at `pg/bin/gmsv_pg_linux.dll`.
@@ -73,7 +72,7 @@ Fully static libpq linking is not currently used because Debian's `libpq.a` depe
 Windows is not currently verified in this fork/rework. If you try it:
 
 1. Install the Microsoft Visual C++ Redistributable required by your server/module build.
-2. Copy `gmsv_pg_win32.dll` into `garrysmod/lua/bin/`.
+2. Build or otherwise provide a fresh Windows module binary and copy it into `garrysmod/lua/bin/`.
 3. Copy the contents of `runtime_depends/windows` to the server root next to `srcds.exe` so PostgreSQL client DLLs can be loaded.
 
 ### 4. Verify the module loads
@@ -503,3 +502,185 @@ Current automatic conversions:
 - Use `RETURNING` instead of `lastInsert()`.
 - Do not rely on automatic replay of failed statements after reconnect.
 - Do not use multi-statement/multi-result MySQL behavior until native PostgreSQL multi-result support exists.
+
+## Full non-exotic example
+
+This script demonstrates the normal supported API surface in one place:
+
+- connection callbacks
+- metadata after connect
+- raw queries
+- prepared queries and reuse
+- `RETURNING` instead of `lastInsert()`
+- result rows and `onData`
+- affected rows
+- transactions
+- query cancellation
+- reconnect callbacks
+- graceful disconnect
+
+It intentionally avoids unsupported/exotic features such as multi-result chains, COPY, LISTEN/NOTIFY, notices, command tags, savepoints, and MySQL-only behavior.
+
+```lua
+require("pg")
+
+local db = pg.connect({
+	host = "127.0.0.1",
+	port = 5432,
+	dbname = "gmsv_pg_test",
+	user = "postgres",
+	password = "postgres",
+	application_name = "gmsv_pg_readme_example"
+})
+
+local function fail(label, err, sql)
+	print("[pg example] FAIL", label, err or "", sql or "")
+end
+
+local function run(sql, onDone)
+	local q = db:query(sql)
+
+	function q:onError(err, failedSql)
+		fail("query", err, failedSql)
+	end
+
+	function q:onSuccess(rows)
+		if onDone then onDone(rows, q) end
+	end
+
+	q:start()
+	return q
+end
+
+local function prepareUserInsert()
+	local q = db:prepare("INSERT INTO pg_example_users(name, admin) VALUES($1, $2) RETURNING id, name, admin")
+
+	function q:onData(row)
+		print("[pg example] inserted row", row.id, row.name, row.admin)
+	end
+
+	function q:onError(err, failedSql)
+		fail("prepared insert", err, failedSql)
+	end
+
+	return q
+end
+
+local function insertUsers(onDone)
+	local insert = prepareUserInsert()
+	local inserted = {}
+
+	local function insertOne(name, admin, done)
+		insert:clearParameters()
+		insert:setString(1, name) -- Do not pre-escape prepared parameters.
+		insert:setBoolean(2, admin)
+
+		function insert:onSuccess(rows)
+			inserted[#inserted + 1] = rows[1]
+			print("[pg example] affected rows", insert:affectedRows())
+			done()
+		end
+
+		insert:start()
+	end
+
+	insertOne("alice", true, function()
+		insertOne("bob", false, function()
+			onDone(inserted)
+		end)
+	end)
+end
+
+local function runTransaction(onDone)
+	local tx = db:createTransaction()
+
+	tx:addQuery(db:query("INSERT INTO pg_example_audit(message) VALUES('transaction started') RETURNING id, message"))
+
+	local insert = db:prepare("INSERT INTO pg_example_users(name, admin) VALUES($1, $2) RETURNING id, name, admin")
+	insert:setString(1, "carol")
+	insert:setBoolean(2, false)
+	tx:addQuery(insert)
+
+	function tx:onError(err)
+		fail("transaction", err)
+	end
+
+	function tx:onSuccess(results)
+		print("[pg example] transaction audit id", results[1][1].id)
+		print("[pg example] transaction user", results[2][1].name)
+		onDone()
+	end
+
+	tx:start()
+end
+
+local function demonstrateCancel(onDone)
+	local slow = db:query("SELECT pg_sleep(5)")
+
+	function slow:onSuccess()
+		fail("cancel", "slow query unexpectedly succeeded")
+	end
+
+	function slow:onError(err, failedSql)
+		fail("cancel", err, failedSql)
+	end
+
+	function slow:onAborted()
+		print("[pg example] slow query aborted")
+		onDone()
+	end
+
+	slow:start()
+	timer.Simple(0.2, function()
+		print("[pg example] abort requested", slow:abort())
+	end)
+end
+
+function db:onConnected()
+	print("[pg example] connected")
+	print("[pg example] server version", db:serverVersion())
+	print("[pg example] server info", db:serverInfo())
+	print("[pg example] host info", db:hostInfo())
+
+	run("DROP TABLE IF EXISTS pg_example_audit", function()
+		run("DROP TABLE IF EXISTS pg_example_users", function()
+			run("CREATE TABLE pg_example_users (id serial PRIMARY KEY, name text NOT NULL, admin boolean NOT NULL)", function()
+				run("CREATE TABLE pg_example_audit (id serial PRIMARY KEY, message text NOT NULL)", function()
+					insertUsers(function()
+						runTransaction(function()
+							run("SELECT id, name, admin FROM pg_example_users ORDER BY id", function(rows)
+								for _, row in ipairs(rows) do
+									print("[pg example] user", row.id, row.name, row.admin)
+								end
+
+								demonstrateCancel(function()
+									db:disconnect(true)
+								end)
+							end)
+						end)
+					end)
+				end)
+			end)
+		end)
+	end)
+end
+
+function db:onConnectionFailed(err)
+	fail("connect", err)
+end
+
+function db:onDisconnected()
+	print("[pg example] disconnected")
+end
+
+function db:onReconnect()
+	print("[pg example] reconnected for future work")
+end
+
+function db:onReconnectFailed(err)
+	fail("reconnect", err)
+end
+
+db:setAutoReconnect(true)
+db:connect()
+```
