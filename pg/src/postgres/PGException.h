@@ -7,18 +7,17 @@
 
 class PGException : public std::runtime_error {
 public:
-    explicit PGException(const std::string &message)
-        : std::runtime_error(message), message(message) {}
+    explicit PGException(const std::string &message, const std::string &sqlstate = "")
+        : std::runtime_error(message), message(message), sqlstate(sqlstate) {}
 
     std::string message;
+    std::string sqlstate;
 };
 
 class PGConnectionException : public PGException {
 public:
     PGConnectionException(const std::string &message, const std::string &sqlstate = "")
-        : PGException(message), sqlstate(sqlstate) {}
-
-    std::string sqlstate;
+        : PGException(message, sqlstate) {}
 };
 
 #endif

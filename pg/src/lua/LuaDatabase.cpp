@@ -5,7 +5,29 @@
 #include "LuaPreparedQuery.h"
 #include "LuaTransaction.h"
 
+#include <cctype>
 #include <vector>
+
+static bool isSafeLibpqOptionKey(const std::string &key) {
+    if (key.empty()) return false;
+    for (char ch : key) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(c) || ch == '_')) return false;
+    }
+    return true;
+}
+
+static bool containsNul(const std::string &value) {
+    return value.find('\0') != std::string::npos;
+}
+
+static std::string readLuaString(ILuaBase *LUA, int stackPosition, const char *errorMessage) {
+    unsigned int length = 0;
+    const char *rawValue = LUA->GetString(stackPosition, &length);
+    std::string value(rawValue, length);
+    if (containsNul(value)) throw PGException(errorMessage);
+    return value;
+}
 
 static void pushLuaObjectTable(ILuaBase *LUA, void *data, int type) {
     LUA->CreateTable();
@@ -26,12 +48,25 @@ LUA_CLASS_FUNCTION(LuaDatabase, create) {
                 continue;
             }
 
-            std::string key = LUA->GetString(-2);
+            std::string key;
+            try {
+                key = readLuaString(LUA, -2, "pg: libpq option keys cannot contain embedded NUL bytes");
+            } catch (...) {
+                LUA->Pop();
+                throw;
+            }
+            if (!isSafeLibpqOptionKey(key)) {
+                LUA->Pop();
+                throw PGException("pg: invalid libpq option key in connection option table");
+            }
             std::string value;
             if (LUA->IsType(-1, GarrysMod::Lua::Type::String)) {
-                unsigned int length = 0;
-                const char *rawValue = LUA->GetString(-1, &length);
-                value.assign(rawValue, length);
+                try {
+                    value = readLuaString(LUA, -1, "pg: libpq option values cannot contain embedded NUL bytes");
+                } catch (...) {
+                    LUA->Pop();
+                    throw;
+                }
             } else if (LUA->IsType(-1, GarrysMod::Lua::Type::Number)) {
                 value = std::to_string((int) LUA->GetNumber(-1));
             } else if (LUA->IsType(-1, GarrysMod::Lua::Type::Bool)) {
@@ -45,25 +80,24 @@ LUA_CLASS_FUNCTION(LuaDatabase, create) {
         }
         createdDatabase = Database::createDatabaseFromOptions(options);
     } else if (LUA->Top() == 1 && LUA->IsType(1, GarrysMod::Lua::Type::String)) {
-        unsigned int length = 0;
-        const char *connectionString = LUA->GetString(1, &length);
-        createdDatabase = Database::createDatabaseFromConnectionString(std::string(connectionString, length));
+        std::string rawConnectionString = readLuaString(LUA, 1, "pg: connection string cannot contain embedded NUL bytes");
+        createdDatabase = Database::createDatabaseFromConnectionString(rawConnectionString);
     } else {
         LUA->CheckType(1, GarrysMod::Lua::Type::String);
         LUA->CheckType(2, GarrysMod::Lua::Type::String);
         LUA->CheckType(3, GarrysMod::Lua::Type::String);
         LUA->CheckType(4, GarrysMod::Lua::Type::String);
-        std::string host = LUA->GetString(1);
-        std::string username = LUA->GetString(2);
-        std::string pw = LUA->GetString(3);
-        std::string database = LUA->GetString(4);
+        std::string host = readLuaString(LUA, 1, "pg: connection parameters cannot contain embedded NUL bytes");
+        std::string username = readLuaString(LUA, 2, "pg: connection parameters cannot contain embedded NUL bytes");
+        std::string pw = readLuaString(LUA, 3, "pg: connection parameters cannot contain embedded NUL bytes");
+        std::string database = readLuaString(LUA, 4, "pg: connection parameters cannot contain embedded NUL bytes");
         unsigned int port = 5432;
         std::string unixSocket;
         if (LUA->IsType(5, GarrysMod::Lua::Type::Number)) {
             port = (int) LUA->GetNumber(5);
         }
         if (LUA->IsType(6, GarrysMod::Lua::Type::String)) {
-            unixSocket = LUA->GetString(6);
+            unixSocket = readLuaString(LUA, 6, "pg: connection parameters cannot contain embedded NUL bytes");
         }
         createdDatabase = Database::createDatabase(host, username, pw, database, port, unixSocket);
     }
@@ -94,7 +128,9 @@ PG_LUA_FUNCTION(query) {
 
     unsigned int outLen = 0;
     const char *queryStr = LUA->GetString(2, &outLen);
-    auto query = Query::create(database->m_database, std::string(queryStr, outLen));
+    std::string sql(queryStr, outLen);
+    if (containsNul(sql)) throw PGException("pg: SQL strings cannot contain embedded NUL bytes");
+    auto query = Query::create(database->m_database, sql);
 
     LUA->Push(1);
     int databaseRef = LuaReferenceCreate(LUA);
@@ -110,7 +146,9 @@ PG_LUA_FUNCTION(prepare) {
     LUA->CheckType(2, GarrysMod::Lua::Type::String);
     unsigned int outLen = 0;
     const char *queryStr = LUA->GetString(2, &outLen);
-    auto query = PreparedQuery::create(database->m_database, std::string(queryStr, outLen));
+    std::string sql(queryStr, outLen);
+    if (containsNul(sql)) throw PGException("pg: SQL strings cannot contain embedded NUL bytes");
+    auto query = PreparedQuery::create(database->m_database, sql);
 
     LUA->Push(1);
     int databaseRef = LuaReferenceCreate(LUA);
@@ -158,9 +196,8 @@ PG_LUA_FUNCTION(connect) {
 
 PG_LUA_FUNCTION(escape) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
-    unsigned int nQueryLength;
-    const char *sQuery = LUA->GetString(2, &nQueryLength);
-    auto escaped = database->m_database->escape(std::string(sQuery, nQueryLength));
+    LUA->CheckType(2, GarrysMod::Lua::Type::String);
+    auto escaped = database->m_database->escape(readLuaString(LUA, 2, "pg: strings passed to escape() cannot contain embedded NUL bytes"));
     LUA->PushString(escaped.c_str(), (unsigned int) escaped.size());
     return 1;
 }
@@ -168,7 +205,7 @@ PG_LUA_FUNCTION(escape) {
 PG_LUA_FUNCTION(setCharacterSet) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     LUA->CheckType(2, GarrysMod::Lua::Type::String);
-    const char *charset = LUA->GetString(2);
+    std::string charset = readLuaString(LUA, 2, "pg: charset cannot contain embedded NUL bytes");
     bool success = database->m_database->setCharacterSet(charset);
     LUA->PushBool(success);
     LUA->PushString("");
@@ -191,19 +228,19 @@ PG_LUA_FUNCTION(setSSLSettings) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     SSLSettings sslSettings;
     if (LUA->IsType(2, GarrysMod::Lua::Type::String)) {
-        sslSettings.key = LUA->GetString(2);
+        sslSettings.key = readLuaString(LUA, 2, "pg: SSL settings cannot contain embedded NUL bytes");
     }
     if (LUA->IsType(3, GarrysMod::Lua::Type::String)) {
-        sslSettings.cert = LUA->GetString(3);
+        sslSettings.cert = readLuaString(LUA, 3, "pg: SSL settings cannot contain embedded NUL bytes");
     }
     if (LUA->IsType(4, GarrysMod::Lua::Type::String)) {
-        sslSettings.ca = LUA->GetString(4);
+        sslSettings.ca = readLuaString(LUA, 4, "pg: SSL settings cannot contain embedded NUL bytes");
     }
     if (LUA->IsType(5, GarrysMod::Lua::Type::String)) {
-        sslSettings.capath = LUA->GetString(5);
+        sslSettings.capath = readLuaString(LUA, 5, "pg: SSL settings cannot contain embedded NUL bytes");
     }
     if (LUA->IsType(6, GarrysMod::Lua::Type::String)) {
-        sslSettings.cipher = LUA->GetString(6);
+        sslSettings.cipher = readLuaString(LUA, 6, "pg: SSL settings cannot contain embedded NUL bytes");
     }
     database->m_database->setSSLSettings(sslSettings);
     return 0;
@@ -221,9 +258,11 @@ PG_LUA_FUNCTION(setWriteTimeout) {
 
 PG_LUA_FUNCTION(setConnectTimeout) {
     auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
+    LUA->CheckType(2, GarrysMod::Lua::Type::Number);
     unsigned int timeout = (int) LUA->GetNumber(2);
     if (timeout == 0) {
         LUA->ThrowError("Timeout must be at least 1");
+        return 0;
     }
     database->m_database->setConnectTimeout(timeout);
     return 0;
@@ -284,16 +323,15 @@ PG_LUA_FUNCTION(setAutoReconnect) {
 }
 
 PG_LUA_FUNCTION(setMultiStatements) {
+    auto database = LuaObject::getLuaObject<LuaDatabase>(LUA);
     LUA->CheckType(2, GarrysMod::Lua::Type::Bool);
-    if (LUA->GetBool(2)) {
-        throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
-    }
+    database->m_database->setMultiStatements(LUA->GetBool(2));
     return 0;
 }
 
 PG_LUA_FUNCTION(setCachePreparedStatements) {
     LUA->CheckType(2, GarrysMod::Lua::Type::Bool);
-    throw PGException("pg: setCachePreparedStatements() is not supported; prepared statements are prepared per execution");
+    throw PGException("pg: setCachePreparedStatements() is not supported; libpq parameter execution does not use a statement cache");
 }
 
 PG_LUA_FUNCTION(abortAllQueries) {
@@ -417,6 +455,8 @@ void LuaDatabase::think(ILuaBase *LUA) {
             if (LUA->GetType(-1) == GarrysMod::Lua::Type::Function) {
                 LUA->ReferencePush(this->m_tableReference);
                 pcallWithErrorReporter(LUA, 1);
+            } else {
+                LUA->Pop();
             }
         } else {
             LUA->GetField(-1, "onConnectionFailed");
@@ -425,19 +465,19 @@ void LuaDatabase::think(ILuaBase *LUA) {
                 auto error = database->connectionError();
                 LUA->PushString(error.c_str());
                 pcallWithErrorReporter(LUA, 2);
+            } else {
+                LUA->Pop();
             }
         }
         LUA->Pop(); // DB Table
 
-        if (!this->m_hasOnDisconnected && !this->m_hasReconnectCallbacks) {
-            // Only free the table reference if we do not have an onDisconnected callback.
-            // Otherwise, it will be freed after the onDisconnected callback was called.
+        if (!database->connectionSuccessful()) {
             LuaReferenceFree(LUA, this->m_tableReference);
             this->m_tableReference = 0;
         }
     }
 
-    //Run callbacks of finished queries
+    // Run reconnect callbacks before query completions so applications observe transport recovery first.
     auto reconnectEvents = database->takeReconnectEvents();
     if (!reconnectEvents.empty() && this->m_tableReference != 0) {
         LUA->ReferencePush(this->m_tableReference);
@@ -464,17 +504,16 @@ void LuaDatabase::think(ILuaBase *LUA) {
         LuaQuery::runCallback(LUA, pair.first, pair.second);
     }
 
-    if (database->wasDisconnected() && this->m_hasOnDisconnected && this->m_tableReference != 0) {
-        this->m_hasOnDisconnected = false;
-
+    if (database->wasDisconnected() && this->m_tableReference != 0) {
         LUA->ReferencePush(this->m_tableReference);
-
         LUA->GetField(-1, "onDisconnected");
         if (LUA->GetType(-1) == GarrysMod::Lua::Type::Function) {
             LUA->ReferencePush(this->m_tableReference);
             pcallWithErrorReporter(LUA, 1);
+        } else {
+            LUA->Pop();
         }
-        LUA->Pop(1); // DB Table
+        LUA->Pop(); // DB Table
 
         LuaReferenceFree(LUA, this->m_tableReference);
         this->m_tableReference = 0;
@@ -561,4 +600,37 @@ void LuaDatabase::runAllThinkHooks(ILuaBase *LUA) {
         database->think(LUA);
         LUA->Pop(); //database
     }
+}
+
+void LuaDatabase::shutdownAll(ILuaBase *LUA) {
+    LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
+    LUA->GetField(-1, "pg");
+    if (!LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
+        LUA->Pop(2); // pg, global
+        return;
+    }
+
+    LUA->GetField(-1, "__weakDatabases");
+    if (!LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
+        LUA->Pop(3); // weak, pg, global
+        return;
+    }
+
+    std::vector<int> databaseReferences;
+    LUA->PushNil();
+    while (LUA->Next(-2) != 0) {
+        LUA->Push(-2);
+        databaseReferences.push_back(LuaReferenceCreate(LUA));
+        LUA->Pop();
+    }
+
+    for (auto &ref : databaseReferences) {
+        LUA->ReferencePush(ref);
+        LuaReferenceFree(LUA, ref);
+        auto database = LuaObject::getLuaObject<LuaDatabase>(LUA, -1);
+        database->onDestroyedByLua(LUA);
+        LUA->Pop();
+    }
+
+    LUA->Pop(3); // weak, pg, global
 }

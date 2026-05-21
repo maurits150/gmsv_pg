@@ -40,6 +40,9 @@ public:
 
 private:
     static std::string quoteConninfoValue(const std::string &value);
+    static bool isSafeOptionKey(const std::string &key);
+    static bool containsNul(const std::string &value);
+    void ensureCanApplyDerivedOption(const char *optionName) const;
 
     std::string database;
     std::string host;
@@ -53,7 +56,7 @@ private:
     bool hasSSLMode = false;
     SSLMode sslMode = SSL_MODE_PREFERRED;
     SSLSettings sslSettings;
-    unsigned int connectTimeout = 0;
+    unsigned int connectTimeout = 10;
 };
 
 #endif

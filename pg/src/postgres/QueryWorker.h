@@ -18,13 +18,16 @@ public:
     bool swapToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     bool removeQueued(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     QueryAbortResult abortQueued();
+    QueryAbortResult abortQueuedAndClose();
     void completeQueuedWithError(const std::string &reason);
+    void completeQueuedWithErrorAndClose(const std::string &reason);
 
     bool takeNext(QueryPair &out);
     void finish(const QueryPair &pair);
     std::deque<QueryPair> takeFinished();
     size_t queueSize() const;
     void close();
+    bool isClosed() const;
 
 private:
     BlockingQueue<QueryPair> finishedQueries;

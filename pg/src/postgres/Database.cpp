@@ -5,6 +5,10 @@
 #include "Query.h"
 #include "Transaction.h"
 
+static bool isUserCancellationError(const PGException &error) {
+    return error.sqlstate == "57014" || std::string(error.what()).find("canceling statement due to user request") != std::string::npos;
+}
+
 std::shared_ptr<Database> Database::createDatabase(const std::string &host, const std::string &username,
                                                    const std::string &password, const std::string &database,
                                                    unsigned int port, const std::string &unixSocket) {
@@ -36,7 +40,7 @@ Database::~Database() {
 }
 
 void Database::enqueueQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
-    if (m_shuttingDown) {
+    if (m_shuttingDown || m_worker.isClosed()) {
         data->setStatus(QUERY_ABORTED);
         data->setFinished(true);
         throw PGException("Database is disconnected.");
@@ -78,14 +82,24 @@ bool Database::cancelRunningQuery(const std::shared_ptr<IQueryData> &data) {
     return m_activeQuery.cancel(data);
 }
 
+void Database::addActiveQueryAlias(const std::shared_ptr<IQueryData> &data) {
+    m_activeQuery.addAlias(data);
+}
+
+void Database::removeActiveQueryAlias(const std::shared_ptr<IQueryData> &data) {
+    m_activeQuery.removeAlias(data);
+}
+
 std::shared_ptr<Query> Database::query(const std::string &query) { return Query::create(shared_from_this(), query); }
 std::shared_ptr<PreparedQuery> Database::prepare(const std::string &query) { return PreparedQuery::create(shared_from_this(), query); }
 std::shared_ptr<Transaction> Database::transaction() { return Transaction::create(shared_from_this()); }
 
 void Database::connect() {
-    if (m_status != DATABASE_NOT_CONNECTED || startedConnecting) throw PGException("Database already connected.");
+    bool expected = false;
+    if (m_status != DATABASE_NOT_CONNECTED || !startedConnecting.compare_exchange_strong(expected, true)) {
+        throw PGException("Database already connected.");
+    }
     m_canWait = true;
-    startedConnecting = true;
     m_status = DATABASE_CONNECTING;
     m_thread = std::thread(&Database::connectRun, this);
 }
@@ -97,6 +111,7 @@ void Database::wait() {
 }
 
 void Database::disconnect(bool waitForThread) {
+    if (!startedConnecting) return;
     shutdown();
     if (waitForThread && m_thread.joinable()) m_thread.join();
 }
@@ -104,31 +119,45 @@ void Database::disconnect(bool waitForThread) {
 void Database::shutdown() {
     bool wasAlreadyShuttingDown = m_shuttingDown.exchange(true);
     if (wasAlreadyShuttingDown) return;
+    m_status = DATABASE_NOT_CONNECTED;
 
     std::shared_ptr<IQueryData> activeData = m_activeQuery.currentData();
     if (activeData) cancelRunningQuery(activeData);
+    auto inFlightData = currentInFlightData();
+    if (inFlightData && inFlightData->getStatus() == QUERY_WAITING) inFlightData->setStatus(QUERY_ABORTED);
 
-    m_worker.abortQueued();
-    m_worker.close();
+    m_worker.abortQueuedAndClose();
 }
 
 bool Database::ping() {
-    std::lock_guard<std::mutex> lock(m_queryMutex);
-    return m_session.ping();
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    bool success = m_session.ping();
+    if (!success && m_status == DATABASE_CONNECTED) {
+        m_status = DATABASE_NOT_CONNECTED;
+        if (shouldAutoReconnect) success = attemptReconnect();
+    }
+    return success;
 }
 
 std::string Database::escape(const std::string &str) {
-    std::lock_guard<std::mutex> lock(m_queryMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     return m_session.escape(str);
 }
 
 bool Database::setCharacterSet(const std::string &characterSet) {
-    std::lock_guard<std::mutex> lock(m_queryMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     return m_session.setCharacterSet(characterSet);
 }
 
 QueryAbortResult Database::abortAllQueries() {
     QueryAbortResult result = m_worker.abortQueued();
+
+    auto inFlightData = currentInFlightData();
+    if (inFlightData && inFlightData->getStatus() == QUERY_WAITING) {
+        inFlightData->setStatus(QUERY_ABORTED);
+        result.requested = true;
+        result.requestedCount++;
+    }
 
     std::shared_ptr<IQueryData> activeData = m_activeQuery.currentData();
     if (activeData && cancelRunningQuery(activeData)) {
@@ -143,6 +172,7 @@ unsigned int Database::serverVersion() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get server version when client is not connected to server yet!");
     }
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     return m_session.serverVersion();
 }
 
@@ -150,6 +180,7 @@ std::string Database::serverInfo() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get server info when client is not connected to server yet!");
     }
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     return m_session.serverInfo();
 }
 
@@ -157,16 +188,31 @@ std::string Database::hostInfo() {
     if (!m_connectionDone || m_status != DATABASE_CONNECTED) {
         throw PGException("Tried to get host info when client is not connected to server yet!");
     }
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     return m_session.hostInfo();
 }
 size_t Database::queueSize() { return m_worker.queueSize(); }
 bool Database::wasDisconnected() { return disconnected; }
 
+std::string Database::connectionError() {
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    return m_session.error();
+}
+
 void Database::setAutoReconnect(bool autoReconnect) { shouldAutoReconnect = autoReconnect; }
-void Database::setConnectTimeout(unsigned int timeout) { m_config.setConnectTimeout(timeout); }
-void Database::setSSLMode(SSLMode mode) { m_config.setSSLMode(mode); }
+void Database::setMultiStatements(bool enabled) { m_multiStatements = enabled; }
+bool Database::multiStatementsEnabled() const { return m_multiStatements; }
+void Database::setConnectTimeout(unsigned int timeout) {
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    m_config.setConnectTimeout(timeout);
+}
+void Database::setSSLMode(SSLMode mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    m_config.setSSLMode(mode);
+}
 
 void Database::setSSLSettings(const SSLSettings &settings) {
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
     m_config.setSSLSettings(settings);
 }
 
@@ -178,10 +224,9 @@ void Database::connectRun() {
             m_connectionDone = true;
             m_status = DATABASE_CONNECTION_FAILED;
             m_connectWakeupVariable.notify_one();
-            disconnected = true;
+            disconnected = false;
             m_canWait = false;
-            m_worker.completeQueuedWithError(m_session.error().empty() ? "Connection to database failed" : m_session.error());
-            m_worker.close();
+            m_worker.completeQueuedWithErrorAndClose(m_session.error().empty() ? "Connection to database failed" : m_session.error());
             return;
         }
         m_success = true;
@@ -191,7 +236,7 @@ void Database::connectRun() {
     }
     run();
     {
-        std::lock_guard<std::mutex> lock(m_queryMutex);
+        std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
         m_session.reset();
     }
     m_canWait = false;
@@ -200,13 +245,22 @@ void Database::connectRun() {
 }
 
 bool Database::attemptConnection() {
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    return attemptConnectionUnlocked();
+}
+
+bool Database::attemptConnectionUnlocked() {
     return m_session.connect(m_config);
 }
 
 bool Database::attemptReconnect() {
     if (m_shuttingDown) return false;
+    std::lock_guard<std::recursive_mutex> lock(m_queryMutex);
+    m_activeQuery.clear();
+    m_status = DATABASE_NOT_CONNECTED;
     m_session.reset();
-    bool success = attemptConnection();
+    bool success = attemptConnectionUnlocked();
+    m_status = success ? DATABASE_CONNECTED : DATABASE_CONNECTION_FAILED;
     m_reconnectLog.add(success, m_session.error());
     return success;
 }
@@ -220,46 +274,33 @@ void Database::runQuery(const std::shared_ptr<IQuery> &query, const std::shared_
         if (!m_session.isOpen()) {
             if (!shouldAutoReconnect || !attemptReconnect()) throw PGConnectionException(m_session.error());
         }
-        ActiveQueryState::Guard activeQuery(m_activeQuery, data, m_session.connectionPtr());
+        ActiveQueryState::Guard activeQuery(m_activeQuery, data, m_session.connection());
         query->executeStatement(*this, m_session.connection(), data);
         data->setCancellationRequested(false);
         data->setResultStatus(QUERY_SUCCESS);
-    } catch (const pqxx::broken_connection &error) {
-        if (data->isCancellationRequested()) {
-            data->setStatus(QUERY_ABORTED);
-            data->setResultStatus(QUERY_NONE);
-            return;
-        }
-        if (shouldAutoReconnect) attemptReconnect();
-        data->setResultStatus(QUERY_ERROR);
-        data->setError(error.what());
-    } catch (const pqxx::sql_error &error) {
-        if (data->isCancellationRequested()) {
-            data->setStatus(QUERY_ABORTED);
-            data->setResultStatus(QUERY_NONE);
-            return;
-        }
-        PGConnectionException pgError(error.what(), error.sqlstate());
-        if (shouldAutoReconnect && isRetriableError(pgError)) attemptReconnect();
-        data->setResultStatus(QUERY_ERROR);
-        data->setError(error.what());
     } catch (const PGConnectionException &error) {
-        if (data->isCancellationRequested()) {
+        if (data->isCancellationRequested() && isUserCancellationError(error)) {
             data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
+        data->setCancellationRequested(false);
         if (shouldAutoReconnect && isRetriableError(error)) attemptReconnect();
         data->setResultStatus(QUERY_ERROR);
-        data->setError(error.what());
-    } catch (const std::exception &error) {
-        if (data->isCancellationRequested()) {
+        if (data->getError().empty()) data->setError(error.what());
+    } catch (const PGException &error) {
+        if (data->isCancellationRequested() && isUserCancellationError(error)) {
             data->setStatus(QUERY_ABORTED);
             data->setResultStatus(QUERY_NONE);
             return;
         }
+        data->setCancellationRequested(false);
         data->setResultStatus(QUERY_ERROR);
-        data->setError(error.what());
+        if (data->getError().empty()) data->setError(error.what());
+    } catch (const std::exception &error) {
+        data->setCancellationRequested(false);
+        data->setResultStatus(QUERY_ERROR);
+        if (data->getError().empty()) data->setError(error.what());
     }
 }
 
@@ -267,17 +308,21 @@ void Database::run() {
     while (true) {
         std::pair<std::shared_ptr<IQuery>, std::shared_ptr<IQueryData>> pair;
         if (!m_worker.takeNext(pair)) return;
+        setInFlight(pair.first, pair.second);
         auto data = pair.second;
         if (data->getStatus() == QUERY_ABORTED) {
             m_worker.finish(pair);
             data->setFinished(true);
+            clearInFlight(data);
             continue;
         }
         {
-            std::unique_lock<std::mutex> lock(m_queryMutex);
-            if (data->getStatus() == QUERY_ABORTED) {
+            std::unique_lock<std::recursive_mutex> lock(m_queryMutex);
+            if (m_shuttingDown || data->getStatus() == QUERY_ABORTED) {
+                data->setStatus(QUERY_ABORTED);
                 m_worker.finish(pair);
                 data->setFinished(true);
+                clearInFlight(data);
                 continue;
             }
             data->setStatus(QUERY_RUNNING);
@@ -288,25 +333,46 @@ void Database::run() {
         }
         m_worker.finish(pair);
         data->setFinished(true);
+        clearInFlight(data);
     }
 }
 
 void Database::waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
+    if (data->isFinished()) return;
     if (!m_canWait) {
         completeQueryWithError(query, data, "Can not wait on query, database is not connected or connection failed.");
         return;
     }
-    if (data->isFinished()) return;
     data->waitUntilFinished();
 }
 
 void Database::completeQueryWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
-                                const std::string &reason) {
+                                 const std::string &reason) {
+    if (data->isFinished()) return;
     data->setError(reason);
     data->setResultStatus(QUERY_ERROR);
     data->setStatus(QUERY_COMPLETE);
     data->setFinished(true);
     m_worker.finish(std::make_pair(query, data));
+}
+
+void Database::setInFlight(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
+    std::lock_guard<std::mutex> lock(m_inFlightMutex);
+    m_inFlightQuery = query;
+    m_inFlightData = data;
+}
+
+void Database::clearInFlight(const std::shared_ptr<IQueryData> &data) {
+    std::lock_guard<std::mutex> lock(m_inFlightMutex);
+    if (m_inFlightData == data) {
+        m_inFlightQuery.reset();
+        m_inFlightData.reset();
+    }
+}
+
+std::shared_ptr<IQueryData> Database::currentInFlightData() {
+    std::lock_guard<std::mutex> lock(m_inFlightMutex);
+    return m_inFlightData;
 }
 
 bool Database::isRetriableError(const PGConnectionException &error) {

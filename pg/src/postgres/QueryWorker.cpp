@@ -38,8 +38,34 @@ QueryAbortResult QueryWorker::abortQueued() {
     return result;
 }
 
+QueryAbortResult QueryWorker::abortQueuedAndClose() {
+    QueryAbortResult result;
+    auto canceled = queryQueue.closeAndClear();
+    for (auto &pair : canceled) {
+        if (!pair.second) continue;
+        pair.second->setStatus(QUERY_ABORTED);
+        pair.second->setFinished(true);
+        result.completed.push_back(pair);
+        result.requested = true;
+        result.requestedCount++;
+    }
+    return result;
+}
+
 void QueryWorker::completeQueuedWithError(const std::string &reason) {
     auto queuedQueries = queryQueue.clear();
+    for (auto &pair : queuedQueries) {
+        if (!pair.second) continue;
+        pair.second->setError(reason);
+        pair.second->setResultStatus(QUERY_ERROR);
+        pair.second->setStatus(QUERY_COMPLETE);
+        finishedQueries.put(pair);
+        pair.second->setFinished(true);
+    }
+}
+
+void QueryWorker::completeQueuedWithErrorAndClose(const std::string &reason) {
+    auto queuedQueries = queryQueue.closeAndClear();
     for (auto &pair : queuedQueries) {
         if (!pair.second) continue;
         pair.second->setError(reason);
@@ -59,3 +85,5 @@ std::deque<QueryWorker::QueryPair> QueryWorker::takeFinished() { return finished
 size_t QueryWorker::queueSize() const { return queryQueue.size(); }
 
 void QueryWorker::close() { queryQueue.close(); }
+
+bool QueryWorker::isClosed() const { return queryQueue.isClosed(); }

@@ -45,9 +45,9 @@ class PreparedQuery : public Query {
 public:
     ~PreparedQuery() override;
 
-    void executeStatement(Database &database, pqxx::connection &connection,
+    void executeStatement(Database &database, PGconn *connection,
                           const std::shared_ptr<IQueryData> &data) override;
-    void executeInTransaction(Database &database, pqxx::connection &connection, pqxx::work &transaction,
+    void executeInTransaction(Database &database, PGconn *connection,
                               const std::shared_ptr<IQueryData> &data) override;
     void clearParameters();
     void setNumber(unsigned int index, double value);

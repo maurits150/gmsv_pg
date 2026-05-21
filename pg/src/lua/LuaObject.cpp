@@ -84,7 +84,7 @@ void LuaObject::pcallWithErrorReporter(ILuaBase *LUA, int nargs) {
     int errorHandlerIndex = LUA->Top() - nargs - 1;
     LUA->Insert(errorHandlerIndex);
     int pcallResult = LUA->PCall(nargs, 0, errorHandlerIndex);
-    if (pcallResult == 2) { //LUA_ERRRUN, we now have a stack trace on the stack
+    if (pcallResult != 0) { // Any Lua error leaves a stack trace/error object on the stack.
         LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
         LUA->GetField(-1, "ErrorNoHalt");
         if (LUA->IsType(-1, GarrysMod::Lua::Type::Function)) {
@@ -131,8 +131,8 @@ int LuaObject::getFunctionReference(ILuaBase *LUA, int stackPosition, const char
     return reference;
 }
 
-uint64_t LuaObject::referenceCreatedCount = 0;
-uint64_t LuaObject::referenceFreedCount = 0;
+std::atomic<std::uint64_t> LuaObject::referenceCreatedCount{0};
+std::atomic<std::uint64_t> LuaObject::referenceFreedCount{0};
 
 int LuaReferenceCreate(GarrysMod::Lua::ILuaBase *LUA) {
     LuaObject::referenceCreatedCount++;

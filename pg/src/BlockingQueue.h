@@ -66,6 +66,19 @@ public:
     std::deque<T> clear() {
         std::lock_guard<std::mutex> lock(mutex);
         std::deque<T> returnQueue = std::move(backingQueue);
+        backingQueue.clear();
+        return returnQueue;
+    }
+
+    std::deque<T> closeAndClear() {
+        std::deque<T> returnQueue;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            closed = true;
+            returnQueue = std::move(backingQueue);
+            backingQueue.clear();
+        }
+        waitObj.notify_all();
         return returnQueue;
     }
 

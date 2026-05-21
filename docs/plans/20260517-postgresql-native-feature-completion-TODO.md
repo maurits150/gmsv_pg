@@ -18,7 +18,6 @@ The current module has working MySQLOO-shaped database/query/prepared-query/tran
 
 ## Current Known Gaps
 
-- `query:commandStatus()` exists but throws.
 - `COPY FROM` / `COPY TO` is not implemented.
 - `LISTEN` / `NOTIFY` receive-side support is not implemented.
 - Savepoint helpers are not implemented.
@@ -28,6 +27,8 @@ The current module has working MySQLOO-shaped database/query/prepared-query/tran
 - Runtime dependency packaging is improved but still environment-sensitive.
 
 ## 1. `query:commandStatus()`
+
+Status: DONE for normal query result chains through direct libpq command tags.
 
 ### Direction
 
@@ -45,8 +46,7 @@ CREATE TABLE
 
 ### Implementation
 
-- Current bundled libpqxx result API does not expose command status publicly.
-- Preferred implementation is to introduce a direct libpq execution path for raw queries and prepared queries where the backend owns the `PGresult` long enough to capture:
+- Direct libpq execution owns each `PGresult` long enough to capture:
   - `PQcmdStatus`
   - `PQcmdTuples`
   - `PQoidValue`
@@ -55,7 +55,7 @@ CREATE TABLE
 - Convert `PGresult` into the existing `ResultData` / `QueryData` representation immediately, then clear the `PGresult`.
 - Keep `query:affectedRows()` backed by command tuples where possible.
 - Keep `query:oid()` backed by `PQoidValue`.
-- Make `query:commandStatus()` return the stored command status string after completion.
+- `query:commandStatus()` returns the stored command status string for the current result.
 
 ### Tests
 
@@ -98,7 +98,7 @@ copy:start()
 
 - Add `PgCopyFrom` and `PgCopyTo` operation types or a shared `PgCopyOperation` base.
 - COPY operations are queued on a `Database` like queries, but have separate Lua wrappers and callbacks.
-- Use libpq COPY APIs directly if libpqxx support is insufficient:
+- Use libpq COPY APIs directly:
   - `PQputCopyData`
   - `PQputCopyEnd`
   - `PQgetCopyData`
@@ -220,12 +220,11 @@ function db:onNotice(message, severity, sqlstate) end
 function db:onWarning(message, severity, sqlstate) end
 ```
 
-If severity separation is unreliable in the current libpq/libpqxx path, expose `onNotice` first and include severity text when available.
+If severity separation is unreliable in the current libpq path, expose `onNotice` first and include severity text when available.
 
 ### Implementation
 
-- Prefer libpq notice receiver hooks on the underlying `PGconn`.
-- If direct PGconn access is blocked by bundled libpqxx, this may require moving connection ownership to direct libpq or adding a backend path that exposes PGconn.
+- Use libpq notice receiver hooks on the underlying `PGconn`.
 - Queue notices to Lua thread; never call Lua from libpq/backend worker context.
 - Notices should not fail the query unless PostgreSQL reports an actual error.
 
@@ -272,7 +271,7 @@ Verify that the new source layout and MySQLOO-derived runtime still build the Wi
 
 - Generate project files on a Windows-capable environment.
 - Confirm vendored headers and LGPL notices are included.
-- Confirm linking with Windows libpq/libpqxx artifacts.
+- Confirm linking with Windows libpq artifacts.
 - Confirm runtime dependencies in `runtime_depends/windows` still match the built binary.
 
 ### Tests
@@ -308,14 +307,13 @@ that copies the host i386 `libpq.so.5` into `runtime_depends/linux/` and prints 
 
 ## Suggested Order
 
-1. Command status through direct libpq result capture.
-2. libpq connection option validation, because listener/COPY may need direct libpq anyway.
-3. LISTEN/NOTIFY dedicated listener connection.
-4. COPY text mode.
-5. Savepoints.
-6. Notice callbacks.
-7. Windows verification.
-8. Runtime dependency refresh script.
+1. libpq connection option validation.
+2. LISTEN/NOTIFY dedicated listener connection.
+3. COPY text mode.
+4. Savepoints.
+5. Notice callbacks.
+6. Windows verification.
+7. Runtime dependency refresh script.
 
 ## Done Criteria
 

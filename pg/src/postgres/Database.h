@@ -12,8 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include <pqxx/pqxx>
-
 #include "ActiveQueryState.h"
 #include "ConnectionConfig.h"
 #include "ConnectionSession.h"
@@ -48,6 +46,8 @@ public:
     QueryAbortResult abortQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     // Requests PostgreSQL cancellation for the query data currently executing on the worker connection.
     bool cancelRunningQuery(const std::shared_ptr<IQueryData> &data);
+    void addActiveQueryAlias(const std::shared_ptr<IQueryData> &data);
+    void removeActiveQueryAlias(const std::shared_ptr<IQueryData> &data);
 
     std::shared_ptr<Query> query(const std::string &query);
     std::shared_ptr<PreparedQuery> prepare(const std::string &query);
@@ -73,11 +73,13 @@ public:
     bool wasDisconnected();
     bool isConnectionDone() { return m_connectionDone; }
     bool connectionSuccessful() { return m_success; }
-    std::string connectionError() { return m_session.error(); }
+    std::string connectionError();
     bool attemptReconnect();
     std::deque<std::pair<bool, std::string>> takeReconnectEvents();
 
     void setAutoReconnect(bool autoReconnect);
+    void setMultiStatements(bool enabled);
+    bool multiStatementsEnabled() const;
     void setConnectTimeout(unsigned int timeout);
     void setSSLMode(SSLMode mode);
     void setSSLSettings(const SSLSettings &settings);
@@ -96,21 +98,30 @@ private:
     void run();
     void runQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     void completeQueryWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
-                          const std::string &reason);
+                           const std::string &reason);
     bool attemptConnection();
+    bool attemptConnectionUnlocked();
+    void setInFlight(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
+    void clearInFlight(const std::shared_ptr<IQueryData> &data);
+    std::shared_ptr<IQueryData> currentInFlightData();
 
     QueryWorker m_worker;
     ConnectionConfig m_config;
     ConnectionSession m_session;
     ReconnectLog m_reconnectLog;
     ActiveQueryState m_activeQuery;
+    std::mutex m_inFlightMutex;
+    std::shared_ptr<IQuery> m_inFlightQuery;
+    std::shared_ptr<IQueryData> m_inFlightData;
     std::thread m_thread;
     std::mutex m_connectMutex;
-    std::mutex m_queryMutex;
+    std::recursive_mutex m_queryMutex;
     std::condition_variable m_connectWakeupVariable;
 
     std::atomic<bool> shouldAutoReconnect{true};
-    bool startedConnecting = false;
+    // Raw db:query execution defaults to PostgreSQL simple-query mode for result chains.
+    std::atomic<bool> m_multiStatements{true};
+    std::atomic<bool> startedConnecting{false};
     std::atomic<bool> m_canWait{false};
     std::atomic<bool> m_shuttingDown{false};
     std::atomic<bool> m_success{true};

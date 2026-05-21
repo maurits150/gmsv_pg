@@ -9,6 +9,7 @@
 #include <utility>
 #include <sstream>
 #include <atomic>
+#include <cstdint>
 #include "GarrysMod/Lua/Interface.h"
 #include "../postgres/PGException.h"
 #include "GarrysMod/Lua/LuaBase.h"
@@ -59,10 +60,12 @@ public:
 
         auto *luaObject = LUA->GetUserType<LuaObject>(-1, TYPE_USERDATA);
         if (luaObject == nullptr) {
+            LUA->Pop();
             LUA->ThrowError("[PG] Expected PG table");
         }
         T *returnValue = dynamic_cast<T *>(luaObject);
         if (returnValue == nullptr) {
+            LUA->Pop();
             LUA->ThrowError("[PG] Invalid CPP Object");
         }
         LUA->Pop(); //__CppObject
@@ -72,8 +75,8 @@ public:
     static int getFunctionReference(ILuaBase *LUA, int stackPosition, const char *fieldName);
     static std::atomic_long allocationCount;
     static std::atomic_long deallocationCount;
-    static uint64_t referenceCreatedCount;
-    static uint64_t referenceFreedCount;
+    static std::atomic<std::uint64_t> referenceCreatedCount;
+    static std::atomic<std::uint64_t> referenceFreedCount;
 protected:
     std::string m_className;
 };

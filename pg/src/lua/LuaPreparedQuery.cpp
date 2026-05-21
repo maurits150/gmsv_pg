@@ -60,7 +60,7 @@ PG_LUA_FUNCTION(setNull) {
 }
 
 PG_LUA_FUNCTION(putNewParameters) {
-    throw PGException("pg: putNewParameters() is not supported until PostgreSQL multi-result access is implemented");
+    throw PGException("pg: putNewParameters() is not supported; prepared parameter batches are not implemented");
 }
 
 PG_LUA_FUNCTION(clearParameters) {
@@ -93,6 +93,8 @@ std::shared_ptr<IQueryData> LuaPreparedQuery::buildQueryData(ILuaBase* LUA, int 
     auto query = std::dynamic_pointer_cast<PreparedQuery>(m_query);
     if (!query) throw PGException("[PG] Expected PG Prepared Query backend");
     std::shared_ptr<QueryData> data(new LuaPreparedQueryData(query->snapshotParameters()));
+    query->snapshotOptions(data);
+    data->setMultiStatementsEnabled(false);
     if (shouldRef) {
         LuaIQuery::referenceCallbacks(LUA, stackPosition, *data);
     }

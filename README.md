@@ -59,7 +59,7 @@ Then either rely on the system loader finding the installed 32-bit libraries, or
 runtime_depends/linux/libpq.so.5 -> server root next to srcds_linux
 ```
 
-The bundled `runtime_depends/linux/libpq.so.5` must match the SSL/runtime libraries available on the host. If the module fails to load with an error like `libssl.so.1.1: cannot open shared object file`, refresh the bundled runtime dependency from the installed 32-bit libpq package:
+The bundled `runtime_depends/linux/libpq.so.5` must match the host's SSL/Kerberos/LDAP/SASL and other transitive libpq runtime libraries. If the module fails to load with an error like `libssl.so.1.1: cannot open shared object file`, check `ldd runtime_depends/linux/libpq.so.5` on the target host and refresh the bundled runtime dependency from the installed 32-bit libpq package:
 
 ```sh
 cp /lib/i386-linux-gnu/libpq.so.5 runtime_depends/linux/libpq.so.5
@@ -69,11 +69,11 @@ Fully static libpq linking is not currently used because Debian's `libpq.a` depe
 
 #### Windows unverified path
 
-Windows is not currently verified in this fork/rework. If you try it:
+Windows is not currently verified in this fork/rework. The bundled Windows PostgreSQL client DLLs are old 32-bit artifacts and require the matching x86 VC++ runtime and transitive DLLs. If you try it:
 
-1. Install the Microsoft Visual C++ Redistributable required by your server/module build.
+1. Install the x86 Microsoft Visual C++ Redistributable required by the bundled/client DLL build; the currently bundled `libpq.dll` imports the VC++ 2010-era `MSVCR100.dll`.
 2. Build or otherwise provide a fresh Windows module binary and copy it into `garrysmod/lua/bin/`.
-3. Copy the contents of `runtime_depends/windows` to the server root next to `srcds.exe` so PostgreSQL client DLLs can be loaded.
+3. Keep `libpq.dll`, `libintl.dll`, `libeay32.dll`, and `ssleay32.dll` from the same PostgreSQL client build together in a directory searched by the Windows loader. If unsure, copy them beside `gmsv_pg_win32.dll` and verify with Dependencies/Dependency Walker.
 
 ### 4. Verify the module loads
 
@@ -89,6 +89,7 @@ If this fails, check:
 - the binary suffix matches `jit.os` / `jit.arch`
 - PostgreSQL client runtime libraries are loadable by the server
 - on Linux, the 32-bit `libpq` runtime and its SSL dependencies match the host
+- on Windows, all x86 `libpq.dll` transitive dependencies are present and match the import libraries used to build the module
 
 ## Building
 
@@ -259,9 +260,9 @@ Query status:
 Query options:
 
 - `pg.OPTION_NUMERIC_FIELDS` — result rows use numeric column indexes instead of names.
-- `pg.OPTION_NAMED_FIELDS` — compatibility constant; named fields are the default.
-- `pg.OPTION_INTERPRET_DATA` — compatibility constant; supported PostgreSQL types are interpreted by default.
-- `pg.OPTION_CACHE` — compatibility constant; prepared statement caching is not implemented.
+- `pg.OPTION_NAMED_FIELDS` — named fields are the default; disabling this uses numeric fields.
+- `pg.OPTION_INTERPRET_DATA` — supported PostgreSQL types are interpreted by default; disabling this returns non-NULL values as strings.
+- `pg.OPTION_CACHE` — compatibility constant; `query:setOption(pg.OPTION_CACHE, true)` throws because prepared statement caching is not implemented.
 
 SSL mode:
 
@@ -323,7 +324,7 @@ Escapes a string using the connected PostgreSQL connection.
 
 #### `db:setCharacterSet(charset)`
 
-Runs `SET CLIENT_ENCODING TO ...`. Returns `true, ""` on success for MySQLOO-shaped compatibility.
+Calls libpq `PQsetClientEncoding()`. Returns `true, ""` on success for MySQLOO-shaped compatibility.
 
 #### `db:setAutoReconnect(enabled)`
 
@@ -349,12 +350,14 @@ db:setSSLSettings(key, cert, ca, capath, cipher)
 db:setConnectTimeout(seconds)
 ```
 
-`key`, `cert`, and `ca` are optional. `capath` and `cipher` currently throw because they do not have exact libpq equivalents in this implementation.
+Connections use a finite default `connect_timeout` of 10 seconds so shutdown/map changes do not wait indefinitely on an initial TCP connect. `key`, `cert`, and `ca` are optional. `capath` and `cipher` currently throw because they do not have exact libpq equivalents in this implementation.
+For raw connection-string constructors, put timeout/SSL options directly in the connection string; setter methods cannot safely rewrite raw DSNs and will throw.
 
-Unsupported compatibility methods:
+Compatibility methods:
 
 ```lua
-db:setMultiStatements(true)       -- throws
+db:setMultiStatements(true)       -- enables raw db:query multi-statement simple-query mode; default
+db:setMultiStatements(false)      -- raw db:query uses single-statement PostgreSQL parameter protocol
 db:setCachePreparedStatements(x)  -- throws
 db:setReadTimeout(seconds)        -- throws; use PostgreSQL statement_timeout
 db:setWriteTimeout(seconds)       -- throws
@@ -375,7 +378,7 @@ function query:onError(err, sql) end
 function query:onAborted() end
 ```
 
-`onData` is called once per result row before `onSuccess`.
+`onData` is called once per row of the first/current result before `onSuccess`. Later raw multi-statement results reached through `getNextResults()` do not replay `onData`.
 
 #### `query:wait(swapToFront)`
 
@@ -395,7 +398,7 @@ Returns the last callback error string, or an empty string.
 
 #### `query:setOption(option, enabled)`
 
-Sets query options. `pg.OPTION_NUMERIC_FIELDS` is the meaningful option today.
+Sets query options for future executions of that query object. Options are snapshotted when `query:start()` or `transaction:addQuery(query)` builds execution data. `pg.OPTION_CACHE` throws because prepared statement caching is not implemented.
 
 #### `query:getData()`
 
@@ -407,17 +410,22 @@ Rows are Lua tables. By default fields are named by column name. With `OPTION_NU
 
 Returns PostgreSQL affected rows for the current result.
 
+#### `query:commandStatus()`
+
+Returns the PostgreSQL command tag for the current result, such as `SELECT 1` or `INSERT 0 1`.
+
 #### `query:oid()`
 
 Returns PostgreSQL inserted OID when available; usually `0` for normal modern tables.
+
+#### `query:hasMoreResults()` / `query:getNextResults()`
+
+Raw SQL can contain multiple PostgreSQL statements. `onSuccess(rows)` and `getData()` expose the first result by default. Use `hasMoreResults()` and `getNextResults()` to advance through subsequent results. `affectedRows()`, `oid()`, and `commandStatus()` always refer to the current result.
 
 Unsupported compatibility methods:
 
 ```lua
 query:lastInsert()      -- throws; use INSERT ... RETURNING
-query:commandStatus()   -- throws until direct libpq command tags are implemented
-query:hasMoreResults()  -- false until multi-result chains are implemented
-query:getNextResults()  -- throws until multi-result chains are implemented
 ```
 
 ### Prepared query object
@@ -441,7 +449,9 @@ Methods:
 
 Indexes are positive integers. Values are snapshotted when `query:start()` or `transaction:addQuery(query)` builds an execution.
 
-String parameters are sent separately from the SQL text; do not pre-escape values before passing them to `query:setString()`.
+String parameters are sent separately from the SQL text; do not pre-escape values before passing them to `query:setString()`. Text parameters reject embedded NUL bytes. Use PostgreSQL bytea hex text today until a dedicated binary parameter setter exists.
+
+Prepared queries always use PostgreSQL parameter execution and are single-statement by PostgreSQL protocol design; `db:setMultiStatements()` affects raw `db:query()` only.
 
 Prepared query objects can be reused. Change parameters and call `query:start()` again to queue another execution; each execution receives its own parameter snapshot.
 
@@ -481,7 +491,7 @@ Methods:
 - `tx:clearQueries()` — clears staged queries.
 - `tx:start()`, `tx:wait()`, `tx:abort()`, `tx:isRunning()`, `tx:error()` — inherited query methods.
 
-Child query callbacks are suppressed inside transactions. The transaction callback fires once after commit or rollback.
+Child query callbacks are suppressed inside transactions. The transaction callback fires once after commit or rollback. Raw child queries are executed with PostgreSQL single-statement parameter protocol inside transactions, regardless of the database multi-statement mode, and transaction-control SQL such as `BEGIN`, `COMMIT`, or `ROLLBACK` is rejected for child queries. `tx:onSuccess(results)` contains the first result table for each child; if a child has additional result sets in future APIs, inspect that child query object during the transaction callback.
 
 Transaction objects are one-shot execution units. Calling `tx:start()` more than once throws; create a new transaction object for retries or repeated work.
 
@@ -501,7 +511,7 @@ Current automatic conversions:
 - Use `$1`, `$2`, ... placeholders, not `?`.
 - Use `RETURNING` instead of `lastInsert()`.
 - Do not rely on automatic replay of failed statements after reconnect.
-- Do not use multi-statement/multi-result MySQL behavior until native PostgreSQL multi-result support exists.
+- Raw PostgreSQL multi-statement queries return PostgreSQL result chains; use `hasMoreResults()` / `getNextResults()` to consume later results.
 
 ## Full non-exotic example
 
@@ -519,7 +529,7 @@ This script demonstrates the normal supported API surface in one place:
 - reconnect callbacks
 - graceful disconnect
 
-It intentionally avoids unsupported/exotic features such as multi-result chains, COPY, LISTEN/NOTIFY, notices, command tags, savepoints, and MySQL-only behavior.
+It intentionally avoids unsupported/exotic features such as COPY, LISTEN/NOTIFY, notices, savepoints, and MySQL-only behavior.
 
 ```lua
 require("pg")

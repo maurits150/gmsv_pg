@@ -2,22 +2,22 @@
 #ifndef PG_CONNECTIONSESSION_H
 #define PG_CONNECTIONSESSION_H
 
-#include <memory>
 #include <string>
 
-#include <pqxx/pqxx>
+#include <libpq-fe.h>
 
 #include "ConnectionConfig.h"
 
 // Runtime representation of a connected PostgreSQL session and its metadata.
 class ConnectionSession {
 public:
+    ~ConnectionSession();
+
     bool connect(const ConnectionConfig &config);
     void reset();
 
     bool isOpen() const;
-    pqxx::connection &connection();
-    pqxx::connection *connectionPtr();
+    PGconn *connection();
 
     bool ping();
     std::string escape(const std::string &str);
@@ -31,7 +31,7 @@ public:
 private:
     void updateMetadata();
 
-    std::unique_ptr<pqxx::connection> connectionHandle;
+    PGconn *connectionHandle = nullptr;
     std::string connectionError;
     std::string serverInfoValue = "PostgreSQL";
     std::string hostInfoValue;

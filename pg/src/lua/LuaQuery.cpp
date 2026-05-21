@@ -2,6 +2,17 @@
 
 #include "LuaQuery.h"
 
+#include <locale>
+#include <sstream>
+
+static double postgresNumberToLua(const std::string &value) {
+    std::istringstream stream(value);
+    stream.imbue(std::locale::classic());
+    double number = 0;
+    stream >> number;
+    return number;
+}
+
 static std::shared_ptr<Query> getBackendQuery(ILuaBase *LUA) {
     auto luaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA);
     auto query = std::dynamic_pointer_cast<Query>(luaQuery->m_query);
@@ -15,18 +26,22 @@ static std::shared_ptr<Query> getBackendQuery(ILuaBase *LUA) {
 //Function that converts PostgreSQL result data into a lua type.
 //Expects the row table to be at the top of the stack at the start of this function
 //Adds a column to the row table
-static void dataToLua(Query &query,
+static void dataToLua(const QueryData &data,
                       GarrysMod::Lua::ILuaBase *LUA, unsigned int column,
                       std::string &columnValue, const char *columnName, int columnType, bool isNull) {
-    if (query.hasOption(OPTION_NUMERIC_FIELDS)) {
+    bool useNumericField = data.hasOption(OPTION_NUMERIC_FIELDS) || !data.hasOption(OPTION_NAMED_FIELDS);
+    bool interpretData = data.hasOption(OPTION_INTERPRET_DATA);
+    if (useNumericField) {
         LUA->PushNumber(column);
     }
     if (isNull) {
         LUA->PushNil();
+    } else if (!interpretData) {
+        LUA->PushString(columnValue.c_str(), (unsigned int) columnValue.length());
     } else {
         switch (columnType) {
             case PG_FIELD_NUMBER:
-                LUA->PushNumber(atof(columnValue.c_str()));
+                LUA->PushNumber(postgresNumberToLua(columnValue));
                 break;
             case PG_FIELD_BOOL: {
                 LUA->PushBool(columnValue == "t" || columnValue == "true" || columnValue == "1");
@@ -40,7 +55,7 @@ static void dataToLua(Query &query,
                 break;
         }
     }
-    if (query.hasOption(OPTION_NUMERIC_FIELDS)) {
+    if (useNumericField) {
         LUA->SetTable(-3);
     } else {
         LUA->SetField(-2, columnName);
@@ -58,7 +73,7 @@ int LuaQuery::createResultTableReference(GarrysMod::Lua::ILuaBase *LUA, Query &q
             LUA->CreateTable();
             int rowStackPosition = LUA->Top();
             for (unsigned int j = 0; j < row.getValues().size(); j++) {
-                dataToLua(query, LUA, j + 1, row.getValues()[j], currentData.getColumns()[j].c_str(),
+                dataToLua(data, LUA, j + 1, row.getValues()[j], currentData.getColumns()[j].c_str(),
                           currentData.getColumnTypes()[j], row.isFieldNull(j));
             }
             LUA->Push(dataStackPosition);
@@ -130,7 +145,10 @@ PG_LUA_FUNCTION(affectedRows) {
 }
 
 PG_LUA_FUNCTION(commandStatus) {
-    throw PGException("pg: commandStatus() is not available through the bundled libpqxx result API yet");
+    auto query = getBackendQuery(LUA);
+    auto status = query->commandStatus();
+    LUA->PushString(status.c_str());
+    return 1;
 }
 
 PG_LUA_FUNCTION(oid) {
@@ -145,7 +163,7 @@ PG_LUA_FUNCTION(lastInsert) {
 
 PG_LUA_FUNCTION(getData) {
     auto query = getBackendQuery(LUA);
-    auto data = std::dynamic_pointer_cast<QueryData>(query->callbackQueryData);
+    auto data = std::dynamic_pointer_cast<QueryData>(query->getCallbackData());
     if (!query->hasCallbackData() || !data || data->getResultStatus() == QUERY_ERROR) {
         LUA->PushNil();
     } else {
@@ -157,12 +175,23 @@ PG_LUA_FUNCTION(getData) {
 }
 
 PG_LUA_FUNCTION(hasMoreResults) {
-    LUA->PushBool(false);
+    auto query = getBackendQuery(LUA);
+    auto data = std::dynamic_pointer_cast<QueryData>(query->getCallbackData());
+    LUA->PushBool(data && data->hasMoreResults());
     return 1;
 }
 
 PG_LUA_FUNCTION(getNextResults) {
-    throw PGException("pg: PostgreSQL multi-statement result chains are not supported yet");
+    auto query = getBackendQuery(LUA);
+    auto data = std::dynamic_pointer_cast<QueryData>(query->getCallbackData());
+    if (!query->hasCallbackData() || !data || !data->advanceResult()) {
+        LUA->PushNil();
+        return 1;
+    }
+    int ref = LuaQuery::createResultTableReference(LUA, *query, *data);
+    LUA->ReferencePush(ref);
+    LuaReferenceFree(LUA, ref);
+    return 1;
 }
 
 void LuaQuery::addMetaTableFunctions(ILuaBase *LUA) {
@@ -192,6 +221,10 @@ void LuaQuery::createMetaTable(ILuaBase *LUA) {
 
 std::shared_ptr<IQueryData> LuaQuery::buildQueryData(ILuaBase *LUA, int stackPosition, bool shouldRef) {
     std::shared_ptr<QueryData> data(new LuaQueryData());
+    auto backendQuery = std::dynamic_pointer_cast<Query>(m_query);
+    if (!backendQuery) throw PGException("[PG] Expected PG Query backend");
+    backendQuery->snapshotOptions(data);
+    data->setMultiStatementsEnabled(backendQuery->multiStatementsForNewExecution());
     data->setStatus(QUERY_COMPLETE);
     if (shouldRef) {
         LuaIQuery::referenceCallbacks(LUA, stackPosition, *data);

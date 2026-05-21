@@ -1,6 +1,6 @@
 # MySQLOO-Compatible PostgreSQL Refactor Plan
 
-Status: TODO
+Status: HISTORICAL / MOSTLY IMPLEMENTED
 Date: 2026-05-17
 
 ## Goal
@@ -316,18 +316,16 @@ Plan:
 
 MySQLOO uses this to enable or disable multi-statement MySQL behavior.
 
-PostgreSQL can execute multiple statements in one SQL string through the simple query protocol, but the current PostgreSQL backend does not expose MySQLOO-compatible multi-result chains. The safe baseline is single-statement execution.
+PostgreSQL can execute multiple statements in one SQL string through the simple query protocol. The active backend drains and exposes PostgreSQL result chains for raw queries by default.
 
 Plan:
 
 - Provide the method for compatibility.
-- Default to single-statement-only raw queries.
-- `db:setMultiStatements(false)` stores the single-statement-only mode for raw queries.
-- `db:setMultiStatements(true)` should throw until the backend can drain and expose all PostgreSQL result sets correctly.
-- Route raw `db:query(sql)` execution through PostgreSQL extended execution with zero parameters, such as `PQexecParams` or a libpqxx equivalent, so PostgreSQL enforces one statement.
+- Raw `db:query(sql)` execution uses libpq simple-query protocol and drains all PostgreSQL results.
+- `db:setMultiStatements(true)` enables raw `db:query` multi-statement simple-query mode, which is also the default.
+- `db:setMultiStatements(false)` routes raw `db:query` through PostgreSQL parameter execution with zero parameters so PostgreSQL enforces one statement.
 - Do not manually scan semicolons or parse SQL. PostgreSQL must be the parser.
-- If the active libpqxx/libpq execution layer cannot enforce extended single-statement execution, `db:setMultiStatements(false)` should throw immediately instead of pretending to enforce the setting.
-- Prepared queries are already single-statement-oriented and should not need separate enforcement.
+- Prepared queries use PostgreSQL parameter execution and remain single-statement-oriented by PostgreSQL protocol constraints.
 
 ### `setCachePreparedStatements()`
 
@@ -355,9 +353,9 @@ Plan:
 - If a queued operation fails with a retriable connection error after execution has started, reconnect for future work but do not replay that operation automatically.
 - This intentionally diverges from MySQLOO's one-shot replay behavior because PostgreSQL writes may have reached the server before the client observed the connection failure.
 - Treat a transaction as one queued operation for scheduling and callbacks, but do not automatically replay it after connection loss.
-- Define retriable connection errors primarily by PostgreSQL SQLSTATE class `08` connection exceptions, using libpq/libpqxx error metadata where available.
+- Define retriable connection errors primarily by PostgreSQL SQLSTATE class `08` connection exceptions, using libpq error metadata where available.
 - Exclude SQLSTATE `08007` (`transaction_resolution_unknown`) from automatic retry unless a future explicit compatibility mode chooses to match MySQLOO more aggressively.
-- Use connection status fallbacks when SQLSTATE is unavailable, such as `PQstatus(conn) == CONNECTION_BAD`, a broken-connection exception type, or the connection object reporting closed after failure.
+- Use connection status fallbacks when SQLSTATE is unavailable, such as `PQstatus(conn) == CONNECTION_BAD`.
 - Do not treat normal SQL errors as reconnect-retryable, including syntax errors (`42xxx`), constraint violations (`23xxx`), auth failures (`28P01`), deadlocks (`40P01`), or serialization failures (`40001`). Those may be application-level retry cases, not reconnect cases.
 - Do not add extra commit-outcome detection or transaction replay machinery in the first implementation. Document that connection loss around commit can have an unknown outcome.
 - Do not proactively rebuild session state after reconnect.
@@ -389,10 +387,10 @@ Plan:
 Plan:
 
 - `OPTION_NUMERIC_FIELDS`: implement.
-- `OPTION_NAMED_FIELDS`: export for compatibility, no-op.
-- `OPTION_INTERPRET_DATA`: export for compatibility, no-op.
-- `OPTION_CACHE`: export for compatibility, no-op or tie to prepared statement cache if implemented.
-- `prepared:putNewParameters()`: throw until PostgreSQL multi-result access is implemented; executing hidden batches without exposing results is misleading.
+- `OPTION_NAMED_FIELDS`: controls named versus numeric result row fields.
+- `OPTION_INTERPRET_DATA`: controls whether supported PostgreSQL values are converted to Lua booleans/numbers/binary strings or returned as strings.
+- `OPTION_CACHE`: exported for compatibility but rejected by `query:setOption()` because prepared statement caching is not implemented.
+- `prepared:putNewParameters()`: throw until real prepared parameter batch execution exists; executing hidden batches without exposing results is misleading.
 
 ## PostgreSQL-Native Features To Preserve Or Add
 
@@ -403,7 +401,7 @@ These should be available through `pg` without being forced into MySQLOO semanti
 Implementation direction:
 
 - Accept a PostgreSQL connection string directly in `pg.connect(connectionString)` and `pg.new_connection(connectionString)`.
-- Pass DSNs to libpq/libpqxx instead of parsing them manually in the module.
+- Pass DSNs to libpq instead of parsing them manually in the module.
 - Validate user-provided DSNs with libpq connection parsing where available so invalid options fail early with PostgreSQL's own error text.
 - Keep MySQLOO-style positional connection arguments as a compatibility constructor, but internally convert them into normal PostgreSQL connection options.
 
@@ -421,7 +419,7 @@ Implementation direction:
 Implementation direction:
 
 - Treat `$1`, `$2`, `$3` placeholders as the PostgreSQL-native prepared query format.
-- Execute parameters through PostgreSQL parameter APIs, such as libpqxx parameter support or direct `PQexecParams` / prepared statement APIs.
+- Execute parameters through PostgreSQL parameter APIs, such as direct `PQsendQueryParams` / `PQexecParams` APIs.
 - Never implement native parameters by manually interpolating escaped strings into SQL.
 - Do not translate `?` placeholders; users must migrate prepared SQL to PostgreSQL-native placeholders.
 
@@ -479,7 +477,7 @@ Implementation direction:
 Implementation direction:
 
 - Return PostgreSQL arrays as strings by default for correctness.
-- Add opt-in array decoding only if it can use a reliable PostgreSQL-aware parser, such as libpqxx array parsing support where available.
+- Add opt-in array decoding only if it can use a reliable PostgreSQL-aware parser.
 - Provide `prepared:setArray(index, values)` later as a native helper that serializes Lua tables into PostgreSQL array parameters safely.
 - Do not implement array support by naive comma-splitting.
 
@@ -547,7 +545,7 @@ src/lua/       MySQLOO-derived Lua binding/object layer, renamed for pg
 src/postgres/  PostgreSQL backend replacing src/mysql
 ```
 
-The current `pg/src` code can be used as a reference for existing libpqxx usage and build integration, but it should not remain the runtime model if it duplicates or conflicts with the MySQLOO-derived architecture.
+The active `pg/src` runtime owns PostgreSQL execution directly through libpq. Do not reintroduce an intermediate C++ client wrapper or duplicate PostgreSQL protocol state outside the backend owner.
 
 Licensing tasks:
 
@@ -565,7 +563,7 @@ Tasks:
 
 - Use RAII for database connections and query state.
 - Replace raw `std::thread*` with `std::thread` or a worker abstraction.
-- Avoid storing pointers to stack-owned libpqxx objects.
+- Avoid storing pointers to stack-owned protocol objects.
 - Define clear object lifetime rules for Lua tables and C++ state.
 
 ### 2. Introduce PostgreSQL Backend Types
@@ -771,7 +769,7 @@ Exit criteria:
 - Implement stable result storage.
 - Implement `OPTION_NUMERIC_FIELDS`.
 - Add initial type conversion policy.
-- Keep public `hasMoreResults()` false and `getNextResults()` unsupported until PostgreSQL multi-result chains are implemented correctly.
+- Keep `hasMoreResults()` and `getNextResults()` backed by the PostgreSQL result-chain model.
 
 Exit criteria:
 

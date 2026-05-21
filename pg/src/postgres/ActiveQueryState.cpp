@@ -1,7 +1,9 @@
 // Active PostgreSQL query cancellation state for gmsv_pg.
 #include "ActiveQueryState.h"
 
-ActiveQueryState::Guard::Guard(ActiveQueryState &state, std::shared_ptr<IQueryData> data, pqxx::connection *connection)
+#include <algorithm>
+
+ActiveQueryState::Guard::Guard(ActiveQueryState &state, std::shared_ptr<IQueryData> data, PGconn *connection)
         : state(state) {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.activeData = std::move(data);
@@ -11,6 +13,7 @@ ActiveQueryState::Guard::Guard(ActiveQueryState &state, std::shared_ptr<IQueryDa
 ActiveQueryState::Guard::~Guard() {
     std::lock_guard<std::mutex> lock(state.mutex);
     state.activeData.reset();
+    state.activeAliases.clear();
     state.activeConnection = nullptr;
 }
 
@@ -19,15 +22,44 @@ std::shared_ptr<IQueryData> ActiveQueryState::currentData() {
     return activeData;
 }
 
-bool ActiveQueryState::cancel(const std::shared_ptr<IQueryData> &data) {
+void ActiveQueryState::clear() {
     std::lock_guard<std::mutex> lock(mutex);
-    if (activeData != data || activeConnection == nullptr) return false;
-    try {
+    activeData.reset();
+    activeAliases.clear();
+    activeConnection = nullptr;
+}
+
+void ActiveQueryState::addAlias(const std::shared_ptr<IQueryData> &data) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (activeConnection != nullptr) activeAliases.push_back(data);
+}
+
+void ActiveQueryState::removeAlias(const std::shared_ptr<IQueryData> &data) {
+    std::lock_guard<std::mutex> lock(mutex);
+    activeAliases.erase(std::remove(activeAliases.begin(), activeAliases.end(), data), activeAliases.end());
+}
+
+bool ActiveQueryState::cancel(const std::shared_ptr<IQueryData> &data) {
+    PGcancel *cancel = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        bool matchesActive = activeData == data ||
+                             std::find(activeAliases.begin(), activeAliases.end(), data) != activeAliases.end();
+        if (!matchesActive || activeConnection == nullptr) return false;
         data->setCancellationRequested(true);
-        activeConnection->cancel_query();
-        return true;
-    } catch (const std::exception &) {
-        data->setCancellationRequested(false);
-        return false;
+        cancel = PQgetCancel(activeConnection);
+        if (!cancel) {
+            data->setCancellationRequested(false);
+            return false;
+        }
     }
+
+    char errorBuffer[256] = {0};
+    int success = PQcancel(cancel, errorBuffer, sizeof(errorBuffer));
+    PQfreeCancel(cancel);
+    if (success == 1) {
+        return true;
+    }
+    data->setCancellationRequested(false);
+    return false;
 }

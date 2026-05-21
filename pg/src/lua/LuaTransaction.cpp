@@ -6,7 +6,11 @@ PG_LUA_FUNCTION(addQuery) {
     auto luaTransaction = LuaObject::getLuaObject<LuaTransaction>(LUA);
 
     auto addedLuaQuery = LuaQuery::getLuaObject<LuaQuery>(LUA, 2);
+    if (luaTransaction->m_query->database() != addedLuaQuery->m_query->database()) {
+        throw PGException("pg: transaction child query must belong to the same database");
+    }
     auto queryData = std::dynamic_pointer_cast<QueryData>(addedLuaQuery->buildQueryData(LUA, 2, false));
+    queryData->setStatus(QUERY_NOT_RUNNING);
     LUA->Push(2);
     int queryReference = LuaReferenceCreate(LUA);
     luaTransaction->m_addedQueries.emplace_back(queryReference, queryData);
@@ -87,7 +91,15 @@ void LuaTransaction::runErrorCallback(GarrysMod::Lua::ILuaBase *LUA, const std::
         auto queryData = std::dynamic_pointer_cast<QueryData>(pair.second);
         query->setCallbackData(pair.second);
     }
-    LuaIQuery::runErrorCallback(LUA, transaction, data);
+    auto refs = LuaIQuery::getCallbackReferences(data);
+    if (!LuaIQuery::pushCallbackReference(LUA, refs->errorReference, refs->tableReference,
+                                          "onError", data->isFirstData())) {
+        return;
+    }
+    LUA->ReferencePush(refs->tableReference);
+    auto error = data->getError();
+    LUA->PushString(error.c_str());
+    LuaObject::pcallWithErrorReporter(LUA, 2);
 }
 
 void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,

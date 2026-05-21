@@ -4,17 +4,18 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
-#include <pqxx/pqxx>
+#include <libpq-fe.h>
 
 #include "IQuery.h"
 
-// Publishes the worker's active libpqxx connection only while PostgreSQL execution is in progress.
+// Publishes the worker's active libpq connection only while PostgreSQL execution is in progress.
 class ActiveQueryState {
 public:
     class Guard {
     public:
-        Guard(ActiveQueryState &state, std::shared_ptr<IQueryData> data, pqxx::connection *connection);
+        Guard(ActiveQueryState &state, std::shared_ptr<IQueryData> data, PGconn *connection);
         ~Guard();
 
         Guard(const Guard &) = delete;
@@ -26,13 +27,17 @@ public:
 
     std::shared_ptr<IQueryData> currentData();
     bool cancel(const std::shared_ptr<IQueryData> &data);
+    void clear();
+    void addAlias(const std::shared_ptr<IQueryData> &data);
+    void removeAlias(const std::shared_ptr<IQueryData> &data);
 
 private:
     friend class Guard;
 
     std::mutex mutex;
     std::shared_ptr<IQueryData> activeData;
-    pqxx::connection *activeConnection = nullptr;
+    std::vector<std::shared_ptr<IQueryData>> activeAliases;
+    PGconn *activeConnection = nullptr;
 };
 
 #endif

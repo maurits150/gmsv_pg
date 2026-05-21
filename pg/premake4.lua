@@ -4,15 +4,19 @@ local suffixes = {
   macosx  = "_macosx",
   windows = "_win32",
 }
+local libpq_include = target_os == "windows" and "include/libpq" or "/usr/include/postgresql"
 
 solution "pg"
   location "./project"
   configurations { "Release" }
   flags { "NoPCH", "NoImportLib", "Symbols", "NoEditAndContinue", "EnableSSE" }
+  if target_os == "windows" then
+    platforms { "x32" }
+  end
 
   if target_os ~= "windows" then
     buildoptions { "-m32", "-fPIC" }
-    linkoptions { "-m32", "-static-libstdc++" }
+    linkoptions { "-m32", "-static-libstdc++", "-static-libgcc" }
   end
 
   configuration "Release"
@@ -33,7 +37,7 @@ project "pg"
   defines { "GMMODULE" }
   libdirs { "lib/"..target_os }
   includedirs {
-    "include",
+    libpq_include,
     "../vendor/gmod-lua",
     "../include",
     "../vendor/gmod-module-base/include",
@@ -53,7 +57,7 @@ project "pg"
   }
 
   if target_os == "windows" then
-    links { "ws2_32", "libeay32", "libpqxx_static", "libpq" }
+    links { "ws2_32", "wsock32", "secur32", "wldap32", "advapi32", "shell32", "libeay32", "ssleay32", "intl", "iconv", "libpq" }
   else
-    links { "pthread", "pqxx", "pq" }
+    links { "pthread", "pq" }
   end

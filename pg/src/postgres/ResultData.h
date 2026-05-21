@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include <pqxx/pqxx>
+#include <libpq-fe.h>
 
 enum PgFieldType {
     PG_FIELD_STRING = 0,
@@ -17,7 +17,7 @@ enum PgFieldType {
 
 class ResultDataRow {
 public:
-    ResultDataRow(const pqxx::row &row, const std::vector<int> &columnTypes);
+    ResultDataRow(PGresult *result, int rowIndex, const std::vector<int> &columnTypes);
 
     std::vector<std::string> &getValues() { return values; }
     bool isFieldNull(unsigned int index) { return nullFields[index]; }
@@ -30,18 +30,26 @@ private:
 class ResultData {
 public:
     ResultData();
-    explicit ResultData(const pqxx::result &result);
+    explicit ResultData(PGresult *result);
 
     std::vector<std::string> &getColumns() { return columns; }
     std::vector<ResultDataRow> &getRows() { return rows; }
     std::vector<int> &getColumnTypes() { return columnTypes; }
 
 private:
-    static int typeForOid(pqxx::oid oid);
+    static int typeForOid(Oid oid);
 
     std::vector<std::string> columns;
     std::vector<int> columnTypes;
     std::vector<ResultDataRow> rows;
+};
+
+// One PostgreSQL protocol result in a possibly multi-statement result chain.
+struct StatementResult {
+    ResultData rows;
+    unsigned long long affectedRows = 0;
+    unsigned long long oid = 0;
+    std::string commandStatus;
 };
 
 #endif

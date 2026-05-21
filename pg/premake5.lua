@@ -7,7 +7,7 @@ workspace "pg"
   vectorextensions "SSE"
 
   if os.target() ~= 'windows' then
-    linkoptions{ "-static-libstdc++" }
+    linkoptions{ "-static-libstdc++", "-static-libgcc" }
   end
 
   configuration 'Release'
@@ -21,7 +21,11 @@ project "pg"
   location "./project"
   targetdir "./bin"
   libdirs { 'lib/'..os.target() }
-  includedirs { 'include', '../vendor/gmod-lua' }
+  if os.target() == 'windows' then
+    includedirs { 'include/libpq', '../vendor/gmod-lua' }
+  else
+    includedirs { '/usr/include/postgresql', '../vendor/gmod-lua' }
+  end
 
   files {
     "src/lua/**.cpp",
@@ -34,8 +38,8 @@ project "pg"
   include "../premake5.lua"
 
   if os.target() == 'windows' then
-    links { 'ws2_32', 'libeay32', 'libpqxx_static', 'libpq' }
+    links { 'ws2_32', 'wsock32', 'secur32', 'wldap32', 'advapi32', 'shell32', 'libeay32', 'ssleay32', 'intl', 'iconv', 'libpq' }
   else
     pic "On"
-    links { 'pthread', 'pqxx', 'pq' }
+    links { 'pthread', 'pq' }
   end

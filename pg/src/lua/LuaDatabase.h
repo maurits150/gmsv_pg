@@ -31,6 +31,7 @@ public:
 
     static void createWeakTable(ILuaBase *LUA);
     static void runAllThinkHooks(ILuaBase *LUA);
+    static void shutdownAll(ILuaBase *LUA);
 };
 
 

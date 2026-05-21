@@ -11,6 +11,23 @@
 #define PG_MINOR_VERSION "0"
 
 GMOD_MODULE_CLOSE() {
+    LuaDatabase::shutdownAll(LUA);
+
+    LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
+    LUA->GetField(-1, "hook");
+    if (LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
+        LUA->GetField(-1, "Remove");
+        if (LUA->IsType(-1, GarrysMod::Lua::Type::Function)) {
+            LUA->PushString("Think");
+            LUA->PushString("__PGThinkHook");
+            LUA->Call(2, 0);
+        } else {
+            LUA->Pop();
+        }
+    }
+    LUA->PushNil();
+    LUA->SetField(-3, "pg");
+    LUA->Pop(2); // hook, global
     return 0;
 }
 
@@ -32,12 +49,12 @@ LUA_FUNCTION(deallocationCount) {
 }
 
 LUA_FUNCTION(referenceCreatedCount) {
-    LUA->PushNumber((double) LuaObject::referenceCreatedCount);
+    LUA->PushNumber((double) LuaObject::referenceCreatedCount.load());
     return 1;
 }
 
 LUA_FUNCTION(referenceFreedCount) {
-    LUA->PushNumber((double) LuaObject::referenceFreedCount);
+    LUA->PushNumber((double) LuaObject::referenceFreedCount.load());
     return 1;
 }
 
@@ -63,13 +80,18 @@ GMOD_MODULE_OPEN() {
 
     LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
     LUA->GetField(-1, "hook");
-    LUA->GetField(-1, "Add");
-    LUA->PushString("Think");
-    LUA->PushString("__PGThinkHook");
-    LUA->PushCFunction(pgThink);
-    LUA->Call(3, 0);
-    LUA->Pop();
-    LUA->Pop();
+    if (LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
+        LUA->GetField(-1, "Add");
+        if (LUA->IsType(-1, GarrysMod::Lua::Type::Function)) {
+            LUA->PushString("Think");
+            LUA->PushString("__PGThinkHook");
+            LUA->PushCFunction(pgThink);
+            LUA->Call(3, 0);
+        } else {
+            LUA->Pop();
+        }
+    }
+    LUA->Pop(2); // hook, global
     LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
     LUA->CreateTable(); //pg
 
@@ -141,5 +163,5 @@ GMOD_MODULE_OPEN() {
     LUA->SetField(-2, "pg");
     LUA->Pop();
 
-    return 1;
+    return 0;
 }
