@@ -17,6 +17,8 @@ public:
     void enqueue(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     bool swapToFront(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
     bool removeQueued(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data);
+    bool completeQueuedWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
+                                const std::string &reason);
     QueryAbortResult abortQueued();
     QueryAbortResult abortQueuedAndClose();
     void completeQueuedWithError(const std::string &reason);

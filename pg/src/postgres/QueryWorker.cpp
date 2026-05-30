@@ -24,6 +24,19 @@ bool QueryWorker::removeQueued(const std::shared_ptr<IQuery> &query, const std::
     });
 }
 
+bool QueryWorker::completeQueuedWithError(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data,
+                                          const std::string &reason) {
+    bool removed = removeQueued(query, data);
+    if (!removed) return false;
+
+    data->setError(reason);
+    data->setResultStatus(QUERY_ERROR);
+    data->setStatus(QUERY_COMPLETE);
+    finishedQueries.put(std::make_pair(query, data));
+    data->setFinished(true);
+    return true;
+}
+
 QueryAbortResult QueryWorker::abortQueued() {
     QueryAbortResult result;
     auto canceled = queryQueue.clear();

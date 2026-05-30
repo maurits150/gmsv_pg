@@ -22,6 +22,17 @@ void Transaction::executeStatement(Database &database, PGconn *connection,
         LibpqExecutor::executeCommand(connection, "BEGIN");
         try {
             executeInTransaction(database, connection, ptr);
+        } catch (const PGConnectionException &error) {
+            std::string message = std::string("Transaction outcome unknown: ") + error.what();
+            for (auto &pair : data->m_queries) {
+                pair.second->setResultStatus(QUERY_ERROR);
+                pair.second->setStatus(QUERY_COMPLETE);
+                pair.second->setError(message);
+                pair.second->setFinished(true);
+            }
+            data->setResultStatus(QUERY_ERROR);
+            data->setError(message);
+            throw;
         } catch (...) {
             try { LibpqExecutor::executeCommand(connection, "ROLLBACK"); } catch (...) {}
             throw;
@@ -52,7 +63,8 @@ void Transaction::executeStatement(Database &database, PGconn *connection,
         for (auto &pair : data->m_queries) {
             if (pair.second->isCancellationRequested()) data->setCancellationRequested(true);
         }
-        bool commitOutcomeUnknown = data->getError().find("Transaction commit outcome unknown") != std::string::npos;
+        bool outcomeUnknown = data->getError().find("Transaction outcome unknown") != std::string::npos ||
+                              data->getError().find("Transaction commit outcome unknown") != std::string::npos;
         for (auto &pair : data->m_queries) {
             if (data->isCancellationRequested()) {
                 pair.second->setResultStatus(QUERY_NONE);
@@ -64,7 +76,7 @@ void Transaction::executeStatement(Database &database, PGconn *connection,
             }
             pair.second->setFinished(true);
         }
-        if (!commitOutcomeUnknown) {
+        if (!outcomeUnknown) {
             data->setResultStatus(QUERY_ERROR);
             data->setError(std::string("Transaction rolled back: ") + error.what());
         }

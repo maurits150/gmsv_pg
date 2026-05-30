@@ -37,6 +37,16 @@ PG_LUA_FUNCTION(clearQueries) {
     return 0;
 }
 
+static void clearAddedQueriesFromCallbackTable(ILuaBase *LUA, const std::shared_ptr<TransactionData> &data) {
+    auto refs = LuaIQuery::getCallbackReferences(data);
+    if (!refs || refs->tableReference == 0) return;
+
+    LUA->ReferencePush(refs->tableReference);
+    auto luaTransaction = LuaObject::getLuaObject<LuaTransaction>(LUA, -1);
+    luaTransaction->clearAddedQueries(LUA);
+    LUA->Pop();
+}
+
 void LuaTransaction::createMetaTable(ILuaBase *LUA) {
     LuaObject::TYPE_TRANSACTION = LUA->CreateMetaTable("PG Transaction");
 
@@ -79,6 +89,7 @@ void LuaTransaction::runAbortedCallback(GarrysMod::Lua::ILuaBase *LUA, const std
         query->setCallbackData(pair.second);
     }
     LuaIQuery::runAbortedCallback(LUA, data);
+    clearAddedQueriesFromCallbackTable(LUA, transactionData);
 }
 
 void LuaTransaction::runErrorCallback(GarrysMod::Lua::ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,
@@ -94,12 +105,14 @@ void LuaTransaction::runErrorCallback(GarrysMod::Lua::ILuaBase *LUA, const std::
     auto refs = LuaIQuery::getCallbackReferences(data);
     if (!LuaIQuery::pushCallbackReference(LUA, refs->errorReference, refs->tableReference,
                                           "onError", data->isFirstData())) {
+        clearAddedQueriesFromCallbackTable(LUA, transactionData);
         return;
     }
     LUA->ReferencePush(refs->tableReference);
     auto error = data->getError();
     LUA->PushString(error.c_str());
     LuaObject::pcallWithErrorReporter(LUA, 2);
+    clearAddedQueriesFromCallbackTable(LUA, transactionData);
 }
 
 void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Transaction> &transaction,
@@ -124,6 +137,7 @@ void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Tra
     if (!LuaIQuery::pushCallbackReference(LUA, refs->successReference, refs->tableReference,
                                           "onSuccess", data->isFirstData())) {
         LUA->Pop(); //Table of results
+        clearAddedQueriesFromCallbackTable(LUA, transactionData);
         return;
     }
     LUA->ReferencePush(refs->tableReference);
@@ -131,6 +145,7 @@ void LuaTransaction::runSuccessCallback(ILuaBase *LUA, const std::shared_ptr<Tra
     LuaObject::pcallWithErrorReporter(LUA, 2);
 
     LUA->Pop(); //Table of results
+    clearAddedQueriesFromCallbackTable(LUA, transactionData);
 
 }
 

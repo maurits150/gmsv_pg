@@ -126,7 +126,10 @@ void Database::shutdown() {
     auto inFlightData = currentInFlightData();
     if (inFlightData && inFlightData->getStatus() == QUERY_WAITING) inFlightData->setStatus(QUERY_ABORTED);
 
-    m_worker.abortQueuedAndClose();
+    auto aborted = m_worker.abortQueuedAndClose();
+    for (const auto &pair : aborted.completed) {
+        m_worker.finish(pair);
+    }
 }
 
 bool Database::ping() {
@@ -340,6 +343,10 @@ void Database::run() {
 void Database::waitForQuery(const std::shared_ptr<IQuery> &query, const std::shared_ptr<IQueryData> &data) {
     if (data->isFinished()) return;
     if (!m_canWait) {
+        if (data->getStatus() == QUERY_WAITING &&
+            m_worker.completeQueuedWithError(query, data, "Can not wait on query, database is not connected or connection failed.")) {
+            return;
+        }
         completeQueryWithError(query, data, "Can not wait on query, database is not connected or connection failed.");
         return;
     }
