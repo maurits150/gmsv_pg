@@ -6,7 +6,12 @@
 #include "LuaTransaction.h"
 
 #include <cctype>
+#include <mutex>
+#include <unordered_set>
 #include <vector>
+
+static std::mutex liveDatabasesMutex;
+static std::unordered_set<LuaDatabase *> liveDatabases;
 
 static bool isSafeLibpqOptionKey(const std::string &key) {
     if (key.empty()) return false;
@@ -35,6 +40,17 @@ static void pushLuaObjectTable(ILuaBase *LUA, void *data, int type) {
     LUA->SetField(-2, "__CppObject");
     LUA->PushMetaTable(type);
     LUA->SetMetaTable(-2);
+}
+
+LuaDatabase::LuaDatabase(std::shared_ptr<Database> database) : LuaObject("Database"),
+                                                              m_database(std::move(database)) {
+    std::lock_guard<std::mutex> lock(liveDatabasesMutex);
+    liveDatabases.insert(this);
+}
+
+LuaDatabase::~LuaDatabase() {
+    std::lock_guard<std::mutex> lock(liveDatabasesMutex);
+    liveDatabases.erase(this);
 }
 
 LUA_CLASS_FUNCTION(LuaDatabase, create) {
@@ -603,34 +619,13 @@ void LuaDatabase::runAllThinkHooks(ILuaBase *LUA) {
 }
 
 void LuaDatabase::shutdownAll(ILuaBase *LUA) {
-    LUA->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
-    LUA->GetField(-1, "pg");
-    if (!LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
-        LUA->Pop(2); // pg, global
-        return;
+    std::vector<LuaDatabase *> databases;
+    {
+        std::lock_guard<std::mutex> lock(liveDatabasesMutex);
+        databases.assign(liveDatabases.begin(), liveDatabases.end());
     }
 
-    LUA->GetField(-1, "__weakDatabases");
-    if (!LUA->IsType(-1, GarrysMod::Lua::Type::Table)) {
-        LUA->Pop(3); // weak, pg, global
-        return;
-    }
-
-    std::vector<int> databaseReferences;
-    LUA->PushNil();
-    while (LUA->Next(-2) != 0) {
-        LUA->Push(-2);
-        databaseReferences.push_back(LuaReferenceCreate(LUA));
-        LUA->Pop();
-    }
-
-    for (auto &ref : databaseReferences) {
-        LUA->ReferencePush(ref);
-        LuaReferenceFree(LUA, ref);
-        auto database = LuaObject::getLuaObject<LuaDatabase>(LUA, -1);
+    for (auto database : databases) {
         database->onDestroyedByLua(LUA);
-        LUA->Pop();
     }
-
-    LUA->Pop(3); // weak, pg, global
 }

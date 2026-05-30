@@ -25,9 +25,8 @@ public:
 
     void onDestroyedByLua(ILuaBase *LUA) override;
 
-    explicit LuaDatabase(std::shared_ptr<Database> database) : LuaObject("Database"),
-                                                               m_database(std::move(database)) {
-    }
+    explicit LuaDatabase(std::shared_ptr<Database> database);
+    ~LuaDatabase() override;
 
     static void createWeakTable(ILuaBase *LUA);
     static void runAllThinkHooks(ILuaBase *LUA);
